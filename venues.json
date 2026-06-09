@@ -1,0 +1,75 @@
+{
+  "melbourne": [
+    {
+      "name": "The Corner Hotel",
+      "url": "https://www.cornerhotel.com/events-and-specials/",
+      "type": "corner",
+      "selectors": {
+        "container": ".calendar__item",
+        "title": ".calendar__item-title",
+        "date": ".calendar__item-date"
+      }
+    },
+    {
+      "name": "The Tote",
+      "url": "https://thetotehotel.com/",
+      "type": "js",
+      "selectors": {
+        "container": "[class*=\"event\"]",
+        "title": ".event-name, .event-details",
+        "date": ".event-date, .highlight"
+      },
+      "note": "Uses JavaScript - uses Playwright"
+    },
+    {
+      "name": "Max Watts",
+      "url": "https://www.maxwatts.com.au/",
+      "type": "js",
+      "timeout": 180000,
+      "wait_time": 60000,
+      "selectors": {
+        "container": ".event-details",
+        "title": ".event-details",
+        "date": "[class*='date']"
+      },
+      "note": "Uses Playwright - needs longer timeout"
+    }
+  ],
+  "geelong": [
+    {
+      "name": "Barwon Club",
+      "url": "https://www.barwonclub.com.au/",
+      "type": "js",
+      "selectors": {
+        "container": ".gig-card",
+        "title": ".gig-title",
+        "date": ".gig-date"
+      },
+      "note": "Uses JavaScript - uses Playwright"
+    },
+    {
+      "name": "The Old Bar",
+      "url": "https://www.theoldbar.com.au/",
+      "type": "js",
+      "selectors": {
+        "container": ".eventlist-event:not(.eventlist-event--past)",
+        "title": ".eventlist-description strong",
+        "date": ".eventlist-datetag"
+      },
+      "note": "Squarespace site - uses Playwright"
+    }
+  ],
+  "surfcoast": [
+    {
+      "name": "Torquay Hotel",
+      "url": "https://torquayhotel.com.au/gigs/",
+      "type": "scrapeops",
+      "selectors": {
+        "container": ".gig",
+        "title": ".gig__name",
+        "date": ".gig__date"
+      },
+      "note": "Uses ScrapeOps"
+    }
+  ]
+}
