@@ -499,6 +499,7 @@ def main():
     parser.add_argument('--delay',
                        type=float, default=2.0,
                        help='Delay between venue requests in seconds (default: 2.0)')
+    parser.add_argument('--output',
                        default=None,
                        help='Output file path (optional)')
 
