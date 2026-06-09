@@ -312,6 +312,7 @@ class GigScraper:
                     title_elem = element.select_one(title_sel)
                     if title_elem:
                         band_name = title_elem.get_text(strip=True)
+                date_text = ""
                 date_sel = selectors.get('date', '')
                 if date_sel:
                     date_elem = element.select_one(date_sel)
