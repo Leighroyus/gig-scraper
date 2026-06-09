@@ -15,6 +15,13 @@ import re
 import time
 import logging
 from typing import List, Dict, Optional
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; rely on env vars
+
 from playwright.sync_api import sync_playwright
 
 
