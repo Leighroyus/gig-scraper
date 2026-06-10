@@ -33,6 +33,17 @@
         "date": "[class*='date']"
       },
       "note": "Uses Playwright - needs longer timeout"
+    },
+    {
+      "name": "Shotkickers",
+      "url": "https://www.shotkickers.com/gigs",
+      "type": "js",
+      "selectors": {
+        "container": ".w-dyn-item",
+        "title": "h4",
+        "date": ".set-times"
+      },
+      "note": "Webflow site - Thornbury"
     }
   ],
   "geelong": [
