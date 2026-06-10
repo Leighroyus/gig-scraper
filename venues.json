@@ -66,6 +66,16 @@
         "date": ".eventlist-datetag"
       },
       "note": "Squarespace site"
+    },
+    {
+      "name": "Cherry Bar",
+      "url": "https://www.cherrybar.com.au/events/",
+      "selectors": {
+        "container": ".card-body",
+        "title": "h4",
+        "date": "p.font-13 span"
+      },
+      "note": "Static site - Melbourne CBD"
     }
   ],
   "geelong": [
