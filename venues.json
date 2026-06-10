@@ -8,7 +8,11 @@
         "container": ".calendar__item",
         "title": ".calendar__item-title",
         "date": ".calendar__item-date"
-      }
+      },
+      "exclude_patterns": [
+        "saturdays?\\s+at\\s+(the\\s+)?corner",
+        "fridays?\\s+at\\s+(the\\s+)?corner"
+      ]
     },
     {
       "name": "The Tote",

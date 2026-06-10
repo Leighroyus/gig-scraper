@@ -1,5 +1,6 @@
 requests
 beautifulsoup4
-lxml
 playwright
 python-dotenv
+duckdb
+dateparser

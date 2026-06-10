@@ -3,3 +3,4 @@ __pycache__/
 *.json
 !venues.json
 .env
+*.duckdb
