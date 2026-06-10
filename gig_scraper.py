@@ -515,6 +515,12 @@ def main():
     parser.add_argument('--output',
                        default=None,
                        help='Output file path (optional)')
+    parser.add_argument('--new-only',
+                       action='store_true',
+                       help='Only output gigs not seen in previous runs (dedup via DuckDB)')
+    parser.add_argument('--db-path',
+                       default=None,
+                       help='Path to DuckDB database (default: gigs.duckdb in scraper dir)')
 
     args = parser.parse_args()
 
@@ -528,13 +534,28 @@ def main():
     else:
         all_gigs = scraper.scrape_region(args.region)
 
+    # Persist to DuckDB and get dedup info
+    from gig_store import upsert_gigs, mark_notified
+    db_path = args.db_path or os.path.join(os.path.dirname(__file__), 'gigs.duckdb')
+    result = upsert_gigs(all_gigs, db_path=db_path)
+
+    if args.new_only:
+        display_gigs = result['new']
+        print(f"[{len(result['new'])} new, {len(result['seen'])} already known]", file=sys.stderr)
+    else:
+        display_gigs = all_gigs
+
+    # Mark displayed gigs as notified
+    if display_gigs:
+        mark_notified(display_gigs, db_path=db_path)
+
     # Write to output file if specified
     if args.output:
         with open(args.output, 'w') as f:
-            json.dump(all_gigs, f, indent=2)
-        print(f"Written {len(all_gigs)} gigs to {args.output}", file=sys.stderr)
+            json.dump(display_gigs, f, indent=2)
+        print(f"Written {len(display_gigs)} gigs to {args.output}", file=sys.stderr)
 
-    output = scraper.format_output(all_gigs, args.format)
+    output = scraper.format_output(display_gigs, args.format)
     print(output)
 
 
