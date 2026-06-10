@@ -38,7 +38,7 @@ def _ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             key         VARCHAR PRIMARY KEY,
             band        VARCHAR NOT NULL,
             venue       VARCHAR NOT NULL,
-            date_raw    VARCHAR NOT NULL,
+            date        VARCHAR NOT NULL,
             date_iso    DATE,
             first_seen  TIMESTAMP NOT NULL,
             last_seen   TIMESTAMP NOT NULL,
@@ -105,13 +105,13 @@ def upsert_gigs(gigs: List[Dict], db_path: str = DB_PATH) -> Dict:
 
             if existing:
                 con.execute(
-                    "UPDATE gigs SET last_seen = ?, band = ?, venue = ?, date_raw = ?, date_iso = ? WHERE key = ?",
+                    "UPDATE gigs SET last_seen = ?, band = ?, venue = ?, date = ?, date_iso = ? WHERE key = ?",
                     [now, gig['band'], gig['venue'], gig['date'], date_iso, key],
                 )
                 seen_gigs.append(gig)
             else:
                 con.execute(
-                    "INSERT INTO gigs (key, band, venue, date_raw, date_iso, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO gigs (key, band, venue, date, date_iso, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     [key, gig['band'], gig['venue'], gig['date'], date_iso, now, now],
                 )
                 new_gigs.append(gig)
@@ -155,7 +155,7 @@ def get_all_gigs(db_path: str = DB_PATH) -> List[Dict]:
     """Get all known gigs."""
     with _connect(db_path) as con:
         rows = con.execute(
-            "SELECT band, venue, date_raw, date_iso, first_seen, last_seen, notified "
+            "SELECT band, venue, date, date_iso, first_seen, last_seen, notified "
             "FROM gigs ORDER BY COALESCE(date_iso, '9999-12-31'), last_seen DESC"
         ).fetchall()
     return [
@@ -179,7 +179,7 @@ def get_new_gigs(db_path: str = DB_PATH) -> List[Dict]:
     """Get gigs that haven't been notified yet."""
     with _connect(db_path) as con:
         rows = con.execute(
-            "SELECT band, venue, date_raw, date_iso FROM gigs "
+            "SELECT band, venue, date, date_iso FROM gigs "
             "WHERE notified = FALSE ORDER BY COALESCE(date_iso, '9999-12-31')"
         ).fetchall()
     return [
