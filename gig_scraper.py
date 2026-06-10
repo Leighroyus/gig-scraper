@@ -324,6 +324,7 @@ class GigScraper:
                             r'\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})\b',
                             r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b',
                             r'\b((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b',
+                            r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s?\d{1,2},?\s?\d{4})',
                         ]
                         for pattern in date_patterns:
                             match = re.search(pattern, date_text, re.IGNORECASE)
@@ -353,6 +354,7 @@ class GigScraper:
                         r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b',
                         r'\b((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}[\/\-\.]\d{1,2})\b',
                         r'\b((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b',
+                        r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s?\d{1,2},?\s?\d{4})',
                     ]
                     for pattern in date_patterns:
                         match = re.search(pattern, text, re.IGNORECASE)
@@ -389,10 +391,18 @@ class GigScraper:
                             return None  # Skip non-gig events
 
             if band_name and len(band_name) > 2:
+                # Normalize concatenated dates (e.g. "Jun112026" → "Jun 11, 2026")
+                clean_date = date_match or 'TBA'
+                if clean_date != 'TBA':
+                    # Insert space between month letters and digits
+                    clean_date = re.sub(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)(\d)', r'\1 \2', clean_date)
+                    # Insert comma before year if missing
+                    clean_date = re.sub(r'(\d{1,2})\s*(\d{4})', r'\1, \2', clean_date)
+
                 return {
                     'band': band_name,
                     'venue': venue_name,
-                    'date': date_match or 'TBA'
+                    'date': clean_date
                 }
 
         except Exception as e:

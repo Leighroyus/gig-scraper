@@ -44,6 +44,17 @@
         "date": ".set-times"
       },
       "note": "Webflow site - Thornbury"
+    },
+    {
+      "name": "Bendigo Hotel",
+      "url": "https://www.bendigohotel.com.au/gigs",
+      "type": "js",
+      "selectors": {
+        "container": "article.hit",
+        "title": ".event-name",
+        "date": ".floating-date-time"
+      },
+      "note": "Squarespace/Oztix site - Collingwood"
     }
   ],
   "geelong": [
