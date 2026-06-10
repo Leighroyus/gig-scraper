@@ -68,6 +68,17 @@
         "date": ".eventlist-datetag"
       },
       "note": "Squarespace site - uses Playwright"
+    },
+    {
+      "name": "Barwon Heads Hotel",
+      "url": "https://barwonheadshotel.com.au/gigs/",
+      "type": "js",
+      "selectors": {
+        "container": ".gig",
+        "title": "h3.gig__name",
+        "date": "span.gig__date"
+      },
+      "note": "WordPress site - uses Playwright"
     }
   ],
   "surfcoast": [
