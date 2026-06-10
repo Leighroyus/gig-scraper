@@ -55,6 +55,17 @@
         "date": ".floating-date-time"
       },
       "note": "Squarespace/Oztix site - Collingwood"
+    },
+    {
+      "name": "Night Hawks",
+      "url": "https://nighthawksbar.com.au/allgigs",
+      "type": "js",
+      "selectors": {
+        "container": ".eventlist-event:not(.eventlist-event--past)",
+        "title": ".eventlist-title",
+        "date": ".eventlist-datetag"
+      },
+      "note": "Squarespace site"
     }
   ],
   "geelong": [
