@@ -46,10 +46,10 @@ python3 gig_scraper.py --region all --format json
 - Bendigo Hotel — Collingwood
 - Night Hawks — Fitzroy
 - Cherry Bar — Melbourne CBD
+- The Old Bar — Fitzroy
 
 **Geelong:**
 - Barwon Club — South Geelong
-- The Old Bar — Geelong
 - Barwon Heads Hotel — Barwon Heads
 
 **Surf Coast:**

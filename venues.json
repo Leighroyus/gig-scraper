@@ -80,6 +80,17 @@
         "date": "p.font-13 span"
       },
       "note": "Static site - Melbourne CBD"
+    },
+    {
+      "name": "The Old Bar",
+      "url": "https://www.theoldbar.com.au/",
+      "type": "js",
+      "selectors": {
+        "container": ".eventlist-event:not(.eventlist-event--past)",
+        "title": ".eventlist-description strong",
+        "date": ".eventlist-datetag"
+      },
+      "note": "Squarespace site - Fitzroy"
     }
   ],
   "geelong": [
@@ -93,17 +104,6 @@
         "date": ".gig-date"
       },
       "note": "Uses JavaScript - uses Playwright"
-    },
-    {
-      "name": "The Old Bar",
-      "url": "https://www.theoldbar.com.au/",
-      "type": "js",
-      "selectors": {
-        "container": ".eventlist-event:not(.eventlist-event--past)",
-        "title": ".eventlist-description strong",
-        "date": ".eventlist-datetag"
-      },
-      "note": "Squarespace site - uses Playwright"
     },
     {
       "name": "Barwon Heads Hotel",
