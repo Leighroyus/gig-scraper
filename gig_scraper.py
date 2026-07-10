@@ -147,7 +147,7 @@ def _extract_gig(element, venue_name: str, selectors: Optional[Dict] = None) -> 
             if date_sel:
                 date_elem = element.select_one(date_sel)
                 if date_elem:
-                    date_text = date_elem.get_text(strip=True)
+                    date_text = date_elem.get_text(' ', strip=True)
                     date_match = _extract_date(date_text)
 
         # --- Fallback: generic extraction ---
@@ -216,6 +216,7 @@ _DATE_PATTERNS = [
     r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\d{1,2}\d{4})',
     r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})',
     r'\b((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}[\/\-\.]\d{1,2})\b',
+    r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})',
 ]
 
 
@@ -223,8 +224,10 @@ def _extract_date(text: str) -> Optional[str]:
     """Try to pull a date string out of *text* using common AU formats."""
     if not text:
         return None
+    # Strip ordinal suffixes (1st, 2nd, 3rd, 4th, etc.) so patterns match
+    cleaned = re.sub(r'(\d{1,2})(?:st|nd|rd|th)', r'\1', text, flags=re.IGNORECASE)
     for pattern in _DATE_PATTERNS:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, cleaned, re.IGNORECASE)
         if match:
             return match.group(1)
     return None

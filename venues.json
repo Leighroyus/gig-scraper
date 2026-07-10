@@ -43,11 +43,11 @@
       "url": "https://www.shotkickers.com/gigs",
       "type": "js",
       "selectors": {
-        "container": ".w-dyn-item",
-        "title": "h4",
-        "date": ".set-times"
+        "container": ".event-tile",
+        "title": ".event-name",
+        "date": ".date-time-venue"
       },
-      "note": "Webflow site - Thornbury"
+      "note": "Algolia/Oztix site - Thornbury (updated 2026-07-10)"
     },
     {
       "name": "Bendigo Hotel",
