@@ -27,18 +27,25 @@ CACHE_DB = os.environ.get("GENRE_CACHE_DB", os.path.join(os.path.dirname(__file_
 
 # Genre keywords that count as "heavy"
 HEAVY_GENRES = {
-    "metal", "hardcore", "punk", "doom", "sludge", "thrash", "death metal",
-    "black metal", "groove metal", "stoner rock", "stoner metal", "grindcore",
-    "post-hardcore", "metalcore", "deathcore", "powerviolence", "crust punk",
-    "noise rock", "post-punk", "industrial", "industrial metal", "gothic metal",
-    "progressive metal", "nu metal", "math rock", "screamo", "emo", "emo punk",
-    "skate punk", "melodic hardcore", "hard rock", "grunge", "alternative metal",
-    "djent", "progressive rock", "psychedelic rock", "psychedelic metal",
-    "folk metal", "viking metal", "doom metal", "funeral doom", "drone metal",
-    "blackgaze", "post-metal", "atmospheric black metal", "symphonic metal",
-    "power metal", "speed metal", "crossover thrash", "hardcore punk",
-    "anarcho punk", "Oi", "street punk", "horror punk", "psychobilly",
-    "no wave", "noise", "experimental rock", "avant-garde metal",
+    # Metal — always heavy
+    "metal", "death metal", "black metal", "thrash metal", "groove metal",
+    "stoner metal", "doom metal", "sludge metal", "deathcore", "metalcore",
+    "progressive metal", "nu metal", "djent", "power metal", "speed metal",
+    "symphonic metal", "folk metal", "viking metal", "gothic metal",
+    "avant-garde metal", "alternative metal", "crossover thrash",
+    "funeral doom", "drone metal", "blackgaze", "post-metal",
+    "atmospheric black metal", "depressive black metal", "raw black metal",
+    "blackened doom", "stoner doom metal", "death doom metal",
+    "brutal death metal", "melodic death metal", "progressive metalcore",
+    "mathcore", "grindcore", "deathgrind", "noisecore",
+    # Punk/hardcore — always heavy
+    "hardcore", "hardcore punk", "powerviolence", "crust punk",
+    "screamo", "emo violence", "d-beat", "oi",
+    "skate punk", "melodic hardcore", "street punk", "horror punk",
+    "anarcho punk", "punk", "punk rock", "garage punk", "ska punk",
+    # Other unambiguous
+    "doom", "sludge", "thrash", "stoner rock", "noise rock",
+    "math rock", "psychobilly", "crust",
 }
 
 
