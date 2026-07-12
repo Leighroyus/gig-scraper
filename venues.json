@@ -123,6 +123,17 @@
         "open\\s+mic"
       ],
       "note": "Algolia/Oztix site - Footscray"
+    },
+    {
+      "name": "The Croxton Bandroom",
+      "url": "http://thecroxton.com.au",
+      "type": "js",
+      "selectors": {
+        "container": ".event-tile",
+        "title": ".event-name",
+        "date": ".date-container"
+      },
+      "note": "Algolia/Oztix site - Thornbury, HTTP only"
     }
   ],
   "geelong": [
