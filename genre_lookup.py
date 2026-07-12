@@ -125,8 +125,9 @@ _STRIP_SUFFIXES = [
 # Note: '&' is excluded — too ambiguous with band names like "Tom & Jerry"
 _SEPARATORS = [
     (r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNORECASE),
-    (r"\s+w/\s+", re.IGNORECASE),
+    (r"\bw/\s*", re.IGNORECASE),  # matches 'Launch w/ Band' or 'Launch w/Band' (no leading space needed)
     (r"\s+with\s+", re.IGNORECASE),
+    (r"\s+and\s+", re.IGNORECASE),  # e.g. 'Neon Goblin and Black Wattle Witches'
     (r"\s+\+\s+", 0),
 ]
 
