@@ -4,6 +4,7 @@ Gig Store - DuckDB persistence for the gig scraper.
 Tracks seen gigs for deduplication across runs.
 """
 
+import json
 import duckdb
 import os
 import re
@@ -42,14 +43,18 @@ def _ensure_table(con: duckdb.DuckDBPyConnection) -> None:
             date_iso    DATE,
             first_seen  TIMESTAMP NOT NULL,
             last_seen   TIMESTAMP NOT NULL,
-            notified    BOOLEAN DEFAULT FALSE
+            notified    BOOLEAN DEFAULT FALSE,
+            genres      VARCHAR DEFAULT '[]',
+            is_heavy    BOOLEAN DEFAULT FALSE,
+            genre_source VARCHAR DEFAULT ''
         )
     """)
-    # Migrate: add date_iso if missing (existing DBs)
-    try:
-        con.execute("SELECT date_iso FROM gigs LIMIT 1")
-    except Exception:
-        con.execute("ALTER TABLE gigs ADD COLUMN date_iso DATE")
+    # Migrate: add columns if missing (existing DBs)
+    for col, default in [('date_iso', 'DATE'), ('genres', "VARCHAR DEFAULT '[]'"), ('is_heavy', 'BOOLEAN DEFAULT FALSE'), ('genre_source', "VARCHAR DEFAULT ''")]:
+        try:
+            con.execute(f"SELECT {col} FROM gigs LIMIT 1")
+        except Exception:
+            con.execute(f"ALTER TABLE gigs ADD COLUMN {col} {default}")
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +160,17 @@ def get_all_gigs(db_path: str = DB_PATH) -> List[Dict]:
     """Get all known gigs."""
     with _connect(db_path) as con:
         rows = con.execute(
-            "SELECT band, venue, date, date_iso, first_seen, last_seen, notified "
+            "SELECT band, venue, date, date_iso, first_seen, last_seen, notified, "
+            "genres, is_heavy, genre_source "
             "FROM gigs ORDER BY COALESCE(date_iso, '9999-12-31'), last_seen DESC"
         ).fetchall()
     return [
         {
             'band': r[0], 'venue': r[1], 'date': r[2], 'date_iso': r[3],
             'first_seen': r[4], 'last_seen': r[5], 'notified': r[6],
+            'genres': json.loads(r[7]) if r[7] else [],
+            'is_heavy': r[8] or False,
+            'genre_source': r[9] or '',
         }
         for r in rows
     ]
@@ -172,7 +181,18 @@ def get_stats(db_path: str = DB_PATH) -> Dict:
     with _connect(db_path) as con:
         total = con.execute("SELECT COUNT(*) FROM gigs").fetchone()[0]
         new_unseen = con.execute("SELECT COUNT(*) FROM gigs WHERE notified = FALSE").fetchone()[0]
-    return {'total': total, 'new_unseen': new_unseen}
+        heavy = con.execute("SELECT COUNT(*) FROM gigs WHERE is_heavy = TRUE").fetchone()[0]
+    return {'total': total, 'new_unseen': new_unseen, 'heavy': heavy}
+
+
+def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str, db_path: str = DB_PATH) -> None:
+    """Update genre info for all gigs matching a band name."""
+    import json
+    with _connect(db_path) as con:
+        con.execute(
+            "UPDATE gigs SET genres = ?, is_heavy = ?, genre_source = ? WHERE band = ?",
+            [json.dumps(genres), is_heavy, source, band],
+        )
 
 
 def get_new_gigs(db_path: str = DB_PATH) -> List[Dict]:

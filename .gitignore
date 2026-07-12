@@ -4,3 +4,4 @@ __pycache__/
 !venues.json
 .env
 *.duckdb
+genre_cache.db

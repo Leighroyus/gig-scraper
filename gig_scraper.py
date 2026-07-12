@@ -411,6 +411,10 @@ def main():
                         help='Output file path (optional)')
     parser.add_argument('--new-only', action='store_true',
                         help='Only output gigs not seen in previous runs (dedup via DuckDB)')
+    parser.add_argument('--enrich-genres', action='store_true',
+                        help='Look up genres for all bands via Last.fm/MusicBrainz')
+    parser.add_argument('--genre', default=None,
+                        help='Filter output to only heavy genres (metal/punk/hardcore etc.)')
     parser.add_argument('--db-path', default=None,
                         help='Path to DuckDB database (default: gigs.duckdb in scraper dir)')
     parser.add_argument('--db-cleanup-days', type=int, default=90,
@@ -467,6 +471,27 @@ def main():
         print(f"[{len(result['new'])} new, {len(result['seen'])} already known]", file=sys.stderr)
     else:
         display_gigs = all_gigs
+
+    # Genre enrichment
+    if args.enrich_genres:
+        from genre_lookup import lookup_genres
+        from gig_store import update_gig_genres
+        bands_seen = set()
+        for gig in display_gigs:
+            band = gig['band']
+            if band in bands_seen:
+                continue
+            bands_seen.add(band)
+            result = lookup_genres(band)
+            update_gig_genres(band, result['genres'], result['is_heavy'], result['source'], db_path=db_path)
+            gig['genres'] = result['genres']
+            gig['is_heavy'] = result['is_heavy']
+            log.info("%s %s → %s", '🔥' if result['is_heavy'] else '  ', band, result['genres'][:3])
+
+    # Genre filter
+    if args.genre == 'heavy':
+        display_gigs = [g for g in display_gigs if g.get('is_heavy')]
+        print(f"[{len(display_gigs)} heavy gigs]", file=sys.stderr)
 
     # BUG FIX #11: only mark notified when --new-only is driving output
     if args.new_only and display_gigs:
