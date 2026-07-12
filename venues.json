@@ -107,6 +107,22 @@
         "standing\\s+circle"
       ],
       "note": "Static site - Fitzroy, Oztix venue"
+    },
+    {
+      "name": "Kindred Studios",
+      "url": "https://kindredstudios.com.au/whats-on/",
+      "type": "js",
+      "selectors": {
+        "container": ".event-tile",
+        "title": ".event-name",
+        "date": ".date-container"
+      },
+      "exclude_patterns": [
+        "video\\s+bingo",
+        "trivia",
+        "open\\s+mic"
+      ],
+      "note": "Algolia/Oztix site - Footscray"
     }
   ],
   "geelong": [
