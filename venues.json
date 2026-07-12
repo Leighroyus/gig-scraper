@@ -91,6 +91,22 @@
         "date": ".eventlist-datetag"
       },
       "note": "Squarespace site - Fitzroy"
+    },
+    {
+      "name": "The Evelyn Hotel",
+      "url": "https://evelynhotel.com.au/events",
+      "selectors": {
+        "container": "a.eventLink",
+        "title": "h2.eventTitle",
+        "date": "h2.date"
+      },
+      "exclude_patterns": [
+        "wine\\s+tasting",
+        "free\\s+wine",
+        "ev\\s+market",
+        "standing\\s+circle"
+      ],
+      "note": "Static site - Fitzroy, Oztix venue"
     }
   ],
   "geelong": [
