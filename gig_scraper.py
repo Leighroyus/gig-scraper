@@ -13,8 +13,10 @@ import logging
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
+import socket
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 try:
     from dotenv import load_dotenv
@@ -25,6 +27,27 @@ except ImportError:
 from playwright.sync_api import sync_playwright
 
 log = logging.getLogger(__name__)
+
+# Cache DNS check results to avoid repeated lookups
+_dns_cache: Dict[str, bool] = {}
+
+
+def _check_dns(url: str, timeout: float = 3.0) -> bool:
+    """Quick DNS check — returns True if hostname resolves."""
+    hostname = urlparse(url).hostname
+    if hostname in _dns_cache:
+        return _dns_cache[hostname]
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.getaddrinfo(hostname, None)
+        _dns_cache[hostname] = True
+        return True
+    except (socket.gaierror, socket.timeout, OSError):
+        _dns_cache[hostname] = False
+        log.warning("DNS resolution failed for %s — skipping venue", hostname)
+        return False
+    finally:
+        socket.setdefaulttimeout(None)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +360,11 @@ class GigScraper:
 
         try:
             for i, venue in enumerate(self.venues[region]):
+                # Quick DNS check — skip broken domains instantly
+                if not _check_dns(venue['url']):
+                    log.warning("Skipping %s (DNS resolution failed)", venue['name'])
+                    continue
+                
                 log.info("Scraping %s…", venue['name'])
                 try:
                     html = self.get_html(venue, browser=browser)

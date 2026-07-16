@@ -76,6 +76,64 @@ def _cache_get(band: str, db_path: str = CACHE_DB) -> Optional[Dict]:
     return None
 
 
+def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
+    """Pre-populate the SQLite genre cache from DuckDB bands table.
+    
+    This avoids redundant API calls for bands we already know about.
+    Returns the number of bands seeded.
+    """
+    if duckdb_path is None:
+        duckdb_path = os.environ.get('GIG_DB_PATH', os.path.join(os.path.dirname(__file__), 'gigs.duckdb'))
+    
+    if not os.path.exists(duckdb_path):
+        log.debug('DuckDB not found at %s, skipping cache seed', duckdb_path)
+        return 0
+    
+    try:
+        import duckdb
+        _init_cache()
+        
+        con_db = duckdb.connect(duckdb_path, read_only=True)
+        rows = con_db.execute(
+            "SELECT name, genres, is_heavy, genre_source FROM bands WHERE genres IS NOT NULL AND genres != '[]'"
+        ).fetchall()
+        con_db.close()
+        
+        if not rows:
+            return 0
+        
+        count = 0
+        con_sql = sqlite3.connect(CACHE_DB)
+        for band_name, genres_json, is_heavy, source in rows:
+            key = _band_key(band_name)
+            # Skip if already cached
+            existing = con_sql.execute(
+                "SELECT 1 FROM genre_cache WHERE band_key = ?", [key]
+            ).fetchone()
+            if existing:
+                continue
+            
+            try:
+                genres = json.loads(genres_json) if genres_json else []
+            except (json.JSONDecodeError, TypeError):
+                genres = []
+            
+            src = source or 'duckdb'
+            con_sql.execute(
+                "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
+                [key, json.dumps(genres), src],
+            )
+            count += 1
+        
+        con_sql.commit()
+        con_sql.close()
+        log.info('Seeded %d bands from DuckDB into genre cache', count)
+        return count
+    except Exception as e:
+        log.warning('Failed to seed cache from DuckDB: %s', e)
+        return 0
+
+
 def _cache_set(band: str, genres: List[str], source: str, db_path: str = CACHE_DB) -> None:
     """Store genre result in cache."""
     key = _band_key(band)
@@ -292,16 +350,52 @@ def _musicbrainz_lookup(band: str) -> Optional[List[str]]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def lookup_genres(band: str, force: bool = False) -> Dict:
+_duckdb_seeded = False
+
+# Patterns that indicate non-music entries (skip API calls for these)
+_NON_MUSIC_PATTERNS = [
+    r'(?i)\b(?:happy\s+hour|trivia|quiz|karaoke|open\s+mic|jam\s+night|bingo|raffle|auction|charity|fundrais|raffle|sunday\s+roast|parma|steak|meat\s+tray|pottery|yoga|meditation|tattoo|piercing|market|flea|car\s+boot|garage\s+sale)\b',
+    r'(?i)\b(?:nfl|nba|mlb|premier\s+league|afl|nrl|super\s+rugby|cricket|tennis|boxing|mma|ufc|wrestling|f1|formula|grand\s+prix)\b',
+    r'(?i)^\s*(?:the\s+)?(?:front\s+bar|back\s+bar|beer\s+garden|beer\s+hall)\b',
+    r'(?i)\b(?:swap\s+meet|flea\s+market|car\s+show|auto\s+show|food\s+festival|wine\s+festival|beer\s+festival)\b',
+    r'(?i)^\s*(?:DJ\s+)?(?:set|b2b|back\s+to\s+back)\b',
+    r'(?i)\b(?:talk|seminar|workshop|class|lecture|panel|conference|meetup|meet\s+up)\b',
+    r'(?i)\b(?:film\s+festival|movie|cinema|screening|theatre|theater|play|comedy|stand\s+up|improv)\b',
+    r'(?i)\b(?:book\s+club|reading|poetry|open\s+book)\b',
+    r'(?i)^\s*(?:free\s+entry|free\s+show)\b',
+    r'(?i)\b(?:wednesdays?|thursdays?|fridays?|saturdays?|sundays?)\s+(?:@|at)\s+\w+\b',
+    r'(?i)^\s*(?:the\s+)?(?:bendi|bendigo)\s+(?:x|ft|featuring)\b',
+]
+
+
+def _is_non_music(name: str) -> bool:
+    """Check if a band name looks like a non-music event."""
+    for pattern in _NON_MUSIC_PATTERNS:
+        if re.search(pattern, name):
+            return True
+    return False
+
+
+def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Dict:
     """
     Look up genres for a band. Returns dict with 'genres', 'source', 'is_heavy'.
-    Uses cache → Last.fm → MusicBrainz chain.
+    Uses cache → DuckDB → Last.fm → MusicBrainz chain.
     """
+    global _duckdb_seeded
     _init_cache()
+    # Seed cache from DuckDB on first call (cheap, idempotent)
+    if not force and not _duckdb_seeded:
+        _duckdb_seeded = True
+        seed_cache_from_duckdb(duckdb_path)
 
     # Clean the artist name for lookup
     artist = clean_artist_name(band)
     if not artist or len(artist) < 2:
+        return {"genres": [], "source": "skipped", "is_heavy": False}
+    
+    # Skip non-music entries early (no API call needed)
+    if _is_non_music(artist):
+        _cache_set(artist, [], "skipped")
         return {"genres": [], "source": "skipped", "is_heavy": False}
 
     # Check cache (use cleaned artist name)
