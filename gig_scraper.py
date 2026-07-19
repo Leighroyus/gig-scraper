@@ -70,15 +70,26 @@ def _fetch_static(session: requests.Session, url: str, max_retries: int = 3, bas
     raise requests.RequestException(f"Failed to fetch {url} after {max_retries} attempts")
 
 
-def _fetch_scrapeops(session: requests.Session, url: str, api_key: str) -> str:
-    """Fetch via ScrapeOps proxy. Returns HTML string."""
+def _fetch_scrapeops(session: requests.Session, url: str, api_key: str, max_retries: int = 3, base_delay: float = 2.0) -> str:
+    """Fetch via ScrapeOps proxy with retries and exponential backoff. Returns HTML string."""
     if not api_key:
         raise ValueError("ScrapeOps API key is blank — set SCRAPEOPS_API_KEY")
     proxy_url = "https://proxy.scrapeops.io/v1/"
     params = {"api_key": api_key, "url": url, "render_js": "true"}
-    response = session.get(proxy_url, params=params, timeout=120)
-    response.raise_for_status()
-    return response.text
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            response = session.get(proxy_url, params=params, timeout=120)
+            response.raise_for_status()
+            return response.text
+        except (requests.RequestException, requests.HTTPError) as e:
+            last_err = e
+            if attempt == max_retries - 1:
+                break
+            delay = base_delay * (2 ** attempt)
+            log.warning("ScrapeOps request failed (attempt %d/%d) for %s: %s. Retrying in %ds…", attempt + 1, max_retries, url, e, delay)
+            time.sleep(delay)
+    raise requests.RequestException(f"ScrapeOps failed for {url} after {max_retries} attempts: {last_err}")
 
 
 def _fetch_playwright(url: str, wait_for_selector: str = None, timeout: int = 30000, wait_time: int = 5000, browser=None) -> str:
@@ -366,12 +377,19 @@ class GigScraper:
                     continue
                 
                 log.info("Scraping %s…", venue['name'])
-                try:
-                    html = self.get_html(venue, browser=browser)
-                    gigs = _parse_events(html, venue, self.event_limit)
-                    all_gigs.extend(gigs)
-                except Exception as e:
-                    log.error("Error scraping %s: %s", venue['name'], e)
+                max_venue_retries = 2
+                for attempt in range(max_venue_retries):
+                    try:
+                        html = self.get_html(venue, browser=browser)
+                        gigs = _parse_events(html, venue, self.event_limit)
+                        all_gigs.extend(gigs)
+                        break
+                    except Exception as e:
+                        if attempt == max_venue_retries - 1:
+                            log.error("Error scraping %s (all %d attempts failed): %s", venue['name'], max_venue_retries, e)
+                        else:
+                            log.warning("Scrape %s failed (attempt %d/%d): %s — retrying…", venue['name'], attempt + 1, max_venue_retries, e)
+                            time.sleep(self.request_delay * 2)
 
                 # Rate-limit between venues (not after the last one)
                 if i < len(self.venues[region]) - 1:
