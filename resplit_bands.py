@@ -50,6 +50,21 @@ def main():
                 )
                 log.info('  + %s → %s', cleaned, result['genres'][:3])
                 time.sleep(0.3)
+            else:
+                new_id = existing[0]
+            
+            # Link split band to all events that had the original composite entry
+            event_rows = con.execute(
+                'SELECT event_id FROM event_bands WHERE band_id = ?', [band_id]
+            ).fetchall()
+            for (event_id,) in event_rows:
+                con.execute(
+                    'INSERT OR IGNORE INTO event_bands (event_id, band_id) VALUES (?, ?)',
+                    [event_id, new_id]
+                )
+        
+        # Remove the old composite entry from event_bands
+        con.execute('DELETE FROM event_bands WHERE band_id = ?', [band_id])
         fixed += 1
 
     total_bands = con.execute('SELECT COUNT(*) FROM bands').fetchone()[0]

@@ -536,22 +536,22 @@ def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str,
 
 
 # ---------------------------------------------------------------------------
-# Run migration if needed (import-time)
+# Migration
 # ---------------------------------------------------------------------------
 
-def _auto_migrate():
-    """Check if migration is needed and run it."""
+def init_db(db_path: str = DB_PATH) -> None:
+    """Initialize the database schema. Call explicitly from main() or CLI.
+
+    Replaces the old import-time _auto_migrate() side effect.
+    """
     try:
-        con = duckdb.connect(DB_PATH)
+        con = duckdb.connect(db_path)
         has_events = _has_table(con, "events")
         has_gigs = _has_table(con, "gigs")
         if has_gigs and not has_events:
             con.close()
-            migrate_from_flat(db_path=DB_PATH)
+            migrate_from_flat(db_path=db_path)
         else:
             con.close()
     except Exception as e:
         log.warning("Auto-migration check failed: %s", e)
-
-
-_auto_migrate()

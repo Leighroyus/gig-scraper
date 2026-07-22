@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 import socket
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 
 try:
     from dotenv import load_dotenv
@@ -38,16 +37,15 @@ def _check_dns(url: str, timeout: float = 3.0) -> bool:
     if hostname in _dns_cache:
         return _dns_cache[hostname]
     try:
-        socket.setdefaulttimeout(timeout)
-        socket.getaddrinfo(hostname, None)
+        # Use create_connection with timeout instead of modifying global state
+        sock = socket.create_connection((hostname, None), timeout=timeout)
+        sock.close()
         _dns_cache[hostname] = True
         return True
     except (socket.gaierror, socket.timeout, OSError):
         _dns_cache[hostname] = False
         log.warning("DNS resolution failed for %s — skipping venue", hostname)
         return False
-    finally:
-        socket.setdefaulttimeout(None)
 
 
 # ---------------------------------------------------------------------------
@@ -323,11 +321,9 @@ class GigScraper:
             with open(self.config_file, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            log.error("Config file %s not found — cannot continue without a valid venues.json", self.config_file)
-            sys.exit(1)
+            raise FileNotFoundError(f"Config file {self.config_file} not found")
         except json.JSONDecodeError as e:
-            log.error("Error parsing config file %s: %s", self.config_file, e)
-            sys.exit(1)
+            raise ValueError(f"Error parsing config file {self.config_file}: {e}")
 
     def get_html(self, venue: Dict, browser=None) -> str:
         """Get HTML for a venue using the appropriate method."""
@@ -438,7 +434,8 @@ class GigScraper:
 
         return unique_gigs
 
-    def format_output(self, gigs: List[Dict], format_type: str = 'text') -> str:
+    @staticmethod
+    def format_output(gigs: List[Dict], format_type: str = 'text') -> str:
         """Format the output"""
         if not gigs:
             return "No gigs found."
@@ -493,8 +490,11 @@ def main():
         sys.exit(1)
 
     # BUG FIX #11: import gig_store here so it's always available
-    from gig_store import upsert_gigs, mark_notified, cleanup_old_gigs
+    from gig_store import init_db, upsert_gigs, mark_notified, cleanup_old_gigs
     db_path = args.db_path or os.path.join(os.path.dirname(__file__), 'gigs.duckdb')
+
+    # Initialize DB schema (replaces import-time migration)
+    init_db(db_path)
 
     # Housekeeping: clean old gigs
     if args.db_cleanup_days > 0:
