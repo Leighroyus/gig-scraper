@@ -92,41 +92,52 @@ def _fetch_scrapeops(session: requests.Session, url: str, api_key: str, max_retr
     raise requests.RequestException(f"ScrapeOps failed for {url} after {max_retries} attempts: {last_err}")
 
 
-def _fetch_playwright(url: str, wait_for_selector: str = None, timeout: int = 30000, wait_time: int = 5000, browser=None) -> str:
-    """Fetch JS-rendered content via Playwright. Returns HTML string.
+def _fetch_playwright(url: str, wait_for_selector: str = None, timeout: int = 30000, wait_time: int = 5000, browser=None, max_retries: int = 2, base_delay: float = 3.0) -> str:
+    """Fetch JS-rendered content via Playwright with retries. Returns HTML string.
 
     If *browser* is passed the caller owns its lifecycle; otherwise a
     throwaway browser is launched and closed.
     """
     owns_browser = browser is None
-    if owns_browser:
-        _pw = sync_playwright().start()
-        browser = _pw.chromium.launch(headless=True)
-    try:
-        page = browser.new_page()
-        page.set_extra_http_headers({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        page.goto(url, timeout=timeout)
-
-        if wait_for_selector:
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            if owns_browser:
+                _pw = sync_playwright().start()
+                browser = _pw.chromium.launch(headless=True)
             try:
-                page.wait_for_selector(wait_for_selector, timeout=10000)
-            except Exception:
-                log.warning("Selector %s not found, proceeding anyway", wait_for_selector)
-        else:
-            try:
-                page.wait_for_load_state('networkidle', timeout=15000)
-            except Exception:
-                page.wait_for_timeout(wait_time)
+                page = browser.new_page()
+                page.set_extra_http_headers({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+                })
+                page.goto(url, timeout=timeout)
 
-        content = page.content()
-        page.close()
-        return content
-    finally:
-        if owns_browser:
-            browser.close()
-            _pw.stop()
+                if wait_for_selector:
+                    try:
+                        page.wait_for_selector(wait_for_selector, timeout=10000)
+                    except Exception:
+                        log.warning("Selector %s not found, proceeding anyway", wait_for_selector)
+                else:
+                    try:
+                        page.wait_for_load_state('networkidle', timeout=15000)
+                    except Exception:
+                        page.wait_for_timeout(wait_time)
+
+                content = page.content()
+                page.close()
+                return content
+            finally:
+                if owns_browser:
+                    browser.close()
+                    _pw.stop()
+        except Exception as e:
+            last_err = e
+            if attempt == max_retries - 1:
+                break
+            delay = base_delay * (2 ** attempt)
+            log.warning("Playwright failed (attempt %d/%d) for %s: %s. Retrying in %ds…", attempt + 1, max_retries, url, e, delay)
+            time.sleep(delay)
+    raise Exception(f"Playwright failed for {url} after {max_retries} attempts: {last_err}")
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +308,7 @@ class GigScraper:
     def __init__(self, config_file: str = 'venues.json', event_limit: int = 10, request_delay: float = 2.0):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
         })
         self.config_file = config_file
         self.event_limit = event_limit
