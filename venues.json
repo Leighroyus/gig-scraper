@@ -41,13 +41,9 @@
     {
       "name": "Shotkickers",
       "url": "https://www.shotkickers.com/gigs",
-      "type": "js",
-      "selectors": {
-        "container": ".event-tile",
-        "title": ".event-name",
-        "date": ".date-time-venue"
-      },
-      "note": "Algolia/Oztix site - Thornbury (updated 2026-07-10)"
+      "type": "algolia",
+      "algolia_index": "prod_oztix_eventguide_past_events_first",
+      "note": "Algolia/Oztix site - Thornbury (switched to API 2026-07-25)"
     },
     {
       "name": "Bendigo Hotel",
@@ -101,29 +97,21 @@
     {
       "name": "Kindred Studios",
       "url": "https://kindredstudios.com.au/whats-on/",
-      "type": "js",
-      "selectors": {
-        "container": ".event-tile",
-        "title": ".event-name",
-        "date": ".date-container"
-      },
+      "type": "algolia",
+      "algolia_index": "prod_oztix_eventguide_past_events_first",
       "exclude_patterns": [
         "video\\s+bingo",
         "trivia",
         "open\\s+mic"
       ],
-      "note": "Algolia/Oztix site - Footscray"
+      "note": "Algolia/Oztix site - Footscray (switched to API 2026-07-25)"
     },
     {
       "name": "The Croxton Bandroom",
       "url": "http://thecroxton.com.au",
-      "type": "js",
-      "selectors": {
-        "container": ".event-tile",
-        "title": ".event-name",
-        "date": ".date-container"
-      },
-      "note": "Algolia/Oztix site - Thornbury, HTTP only"
+      "type": "algolia",
+      "algolia_index": "prod_oztix_eventguide_past_events_first",
+      "note": "Algolia/Oztix site - Thornbury (switched to API 2026-07-25)"
     }
   ],
   "geelong": [

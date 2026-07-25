@@ -10,6 +10,7 @@ import json
 import re
 import time
 import logging
+from datetime import datetime
 from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
@@ -32,20 +33,94 @@ _dns_cache: Dict[str, bool] = {}
 
 
 def _check_dns(url: str, timeout: float = 3.0) -> bool:
-    """Quick DNS check — returns True if hostname resolves."""
+    """Quick DNS check — returns True if hostname resolves.
+
+    Uses getaddrinfo with AF_INET (IPv4) to avoid IPv6-only lookups
+    that can fail on dual-stack hosts with flaky local DNS.
+    """
     hostname = urlparse(url).hostname
+    if not hostname:  # handle malformed URLs (file://, data:, etc.)
+        return False
     if hostname in _dns_cache:
         return _dns_cache[hostname]
     try:
-        # Use create_connection with timeout instead of modifying global state
-        sock = socket.create_connection((hostname, None), timeout=timeout)
-        sock.close()
-        _dns_cache[hostname] = True
-        return True
-    except (socket.gaierror, socket.timeout, OSError):
+        # AF_INET + getaddrinfo is more reliable than create_connection
+        # which can fail on hosts with broken systemd-resolved
+        # Note: getaddrinfo doesn't accept timeout param, but DNS lookups
+        # are typically <100ms. The timeout is enforced at the connect level.
+        addrinfos = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+        if addrinfos:
+            _dns_cache[hostname] = True
+            return True
         _dns_cache[hostname] = False
-        log.warning("DNS resolution failed for %s — skipping venue", hostname)
+        log.warning("DNS returned no results for %s — skipping venue", hostname)
         return False
+    except (socket.gaierror, socket.timeout, OSError) as e:
+        _dns_cache[hostname] = False
+        log.warning("DNS resolution failed for %s (%s) — skipping venue", hostname, e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Algolia API fetch (for Oztix/Algolia venues)
+# ---------------------------------------------------------------------------
+
+# Shared Algolia credentials (search-only, embedded in page source)
+_ALGOLIA_APP_ID = 'ICGFYQWGTD'
+_ALGOLIA_API_KEY = 'fd2db5fd9e8d6a99f5fa0b564cadd484'
+_ALGOLIA_BASE_URL = f'https://{_ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes/*/queries'
+_ALGOLIA_HEADERS = {
+    'x-algolia-application-id': _ALGOLIA_APP_ID,
+    'x-algolia-api-key': _ALGOLIA_API_KEY,
+    'content-type': 'application/json',
+}
+
+
+def _format_algolia_date(iso_str: str) -> str:
+    """Convert ISO date string from Algolia to a human-readable AU format."""
+    if not iso_str:
+        return 'TBA'
+    try:
+        dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+        return dt.strftime('%b %d, %Y')
+    except (ValueError, AttributeError):
+        return iso_str
+
+
+def _fetch_algolia(venue_name: str, index: str = 'prod_oztix_eventguide_past_events_first',
+                   event_limit: int = 100) -> List[Dict]:
+    """Fetch events directly from Algolia API for Oztix venues.
+
+    Returns list of gig dicts compatible with the rest of the scraper.
+    """
+    payload = {
+        'requests': [{
+            'indexName': index,
+            'params': f'hitsPerPage={event_limit}&page=0&query=&filters=(Venue.Name:"{venue_name}")'
+        }]
+    }
+    try:
+        r = requests.post(_ALGOLIA_BASE_URL, headers=_ALGOLIA_HEADERS, json=payload, timeout=15)
+        r.raise_for_status()
+        hits = r.json()['results'][0]['hits']
+    except Exception as e:
+        log.error("Algolia API request failed for %s: %s", venue_name, e)
+        return []
+
+    gigs = []
+    for h in hits:
+        if h.get('IsCancelled') or h.get('IsPostponed'):
+            continue
+        event_name = h.get('EventName', '').strip()
+        if not event_name:
+            continue
+        date_str = _format_algolia_date(h.get('DateStart', ''))
+        gigs.append({
+            'band': event_name,
+            'venue': venue_name,
+            'date': date_str,
+        })
+    return gigs
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +331,8 @@ _DATE_PATTERNS = [
     r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\b',
     r'\b((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})\b',
     r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s?\d{1,2}\b,?\s?\d{4})',
-    r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\d{1,2}\d{4})',
+    # FIX: require space between month and day to avoid matching "Jan12024"
+    r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\s+\d{4})',
     r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})',
     r'\b((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}[\/\-\.]\d{1,2})\b',
     r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})',
@@ -366,6 +442,7 @@ class GigScraper:
             return []
 
         all_gigs = []
+        algolia_venues = [v for v in self.venues[region] if v.get('type') == 'algolia']
         js_venues = [v for v in self.venues[region] if v.get('requires_js', False) or v.get('type') == 'js']
         needs_browser = len(js_venues) > 0
 
@@ -378,8 +455,22 @@ class GigScraper:
 
         try:
             for i, venue in enumerate(self.venues[region]):
-                # Quick DNS check — skip broken domains instantly
-                if not _check_dns(venue['url']):
+                # --- Algolia API venues: bypass Playwright entirely ---
+                if venue.get('type') == 'algolia':
+                    log.info("Fetching %s via Algolia API…", venue['name'])
+                    try:
+                        index = venue.get('algolia_index', 'prod_oztix_eventguide_past_events_first')
+                        gigs = _fetch_algolia(venue['name'], index=index, event_limit=self.event_limit)
+                        all_gigs.extend(gigs)
+                        log.info("  → %d events from Algolia", len(gigs))
+                    except Exception as e:
+                        log.error("Algolia API failed for %s: %s", venue['name'], e)
+                    if i < len(self.venues[region]) - 1:
+                        time.sleep(self.request_delay)
+                    continue
+
+                # FIX: skip DNS check for ScrapeOps venues (they resolve server-side)
+                if venue.get('type') != 'scrapeops' and not _check_dns(venue['url']):
                     log.warning("Skipping %s (DNS resolution failed)", venue['name'])
                     continue
                 
@@ -539,11 +630,11 @@ def main():
             if band in bands_seen:
                 continue
             bands_seen.add(band)
-            result = lookup_genres(band)
-            update_gig_genres(band, result['genres'], result['is_heavy'], result['source'], db_path=db_path)
-            gig['genres'] = result['genres']
-            gig['is_heavy'] = result['is_heavy']
-            log.info("%s %s → %s", '🔥' if result['is_heavy'] else '  ', band, result['genres'][:3])
+            genre_result = lookup_genres(band)
+            update_gig_genres(band, genre_result['genres'], genre_result['is_heavy'], genre_result['source'], db_path=db_path)
+            gig['genres'] = genre_result['genres']
+            gig['is_heavy'] = genre_result['is_heavy']
+            log.info("%s %s → %s", '🔥' if genre_result['is_heavy'] else '  ', band, genre_result['genres'][:3])
 
     # Genre filter
     if args.genre == 'heavy':
