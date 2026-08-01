@@ -11,6 +11,8 @@ import json
 import sqlite3
 import logging
 from typing import Optional, List, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import requests
 
@@ -49,9 +51,9 @@ HEAVY_GENRES = {
 }
 
 
-def _init_cache(db_path: str = CACHE_DB) -> None:
-    """Create cache table if it doesn't exist."""
-    con = sqlite3.connect(db_path)
+def _init_cache(db_path: str = CACHE_DB) -> sqlite3.Connection:
+    """Create cache table if it doesn't exist. Returns connection (caller must close)."""
+    con = sqlite3.connect(db_path, check_same_thread=False)
     con.execute("""
         CREATE TABLE IF NOT EXISTS genre_cache (
             band_key    TEXT PRIMARY KEY,
@@ -60,48 +62,53 @@ def _init_cache(db_path: str = CACHE_DB) -> None:
             fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    con.close()
+    return con
 
 
-def _cache_get(band: str, db_path: str = CACHE_DB) -> Optional[Dict]:
-    """Check cache for a band."""
+def _cache_get(band: str, conn: sqlite3.Connection = None, db_path: str = CACHE_DB) -> Optional[Dict]:
+    """Check cache for a band. If conn is provided, use it; otherwise open/close."""
     key = _band_key(band)
-    con = sqlite3.connect(db_path)
-    row = con.execute(
-        "SELECT genres, source, fetched_at FROM genre_cache WHERE band_key = ?", [key]
-    ).fetchone()
-    con.close()
-    if row:
-        return {"genres": json.loads(row[0]), "source": row[1], "fetched_at": row[2]}
-    return None
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT genres, source, fetched_at FROM genre_cache WHERE band_key = ?", [key]
+        ).fetchone()
+        if row:
+            return {"genres": json.loads(row[0]), "source": row[1], "fetched_at": row[2]}
+        return None
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
     """Pre-populate the SQLite genre cache from DuckDB bands table.
-    
+
     This avoids redundant API calls for bands we already know about.
     Returns the number of bands seeded.
     """
     if duckdb_path is None:
         duckdb_path = os.environ.get('GIG_DB_PATH', os.path.join(os.path.dirname(__file__), 'gigs.duckdb'))
-    
+
     if not os.path.exists(duckdb_path):
         log.debug('DuckDB not found at %s, skipping cache seed', duckdb_path)
         return 0
-    
+
     try:
         import duckdb
         _init_cache()
-        
+
         con_db = duckdb.connect(duckdb_path, read_only=True)
         rows = con_db.execute(
             "SELECT name, genres, is_heavy, genre_source FROM bands WHERE genres IS NOT NULL AND genres != '[]'"
         ).fetchall()
         con_db.close()
-        
+
         if not rows:
             return 0
-        
+
         count = 0
         con_sql = sqlite3.connect(CACHE_DB)
         for band_name, genres_json, is_heavy, source in rows:
@@ -112,19 +119,19 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
             ).fetchone()
             if existing:
                 continue
-            
+
             try:
                 genres = json.loads(genres_json) if genres_json else []
             except (json.JSONDecodeError, TypeError):
                 genres = []
-            
+
             src = source or 'duckdb'
             con_sql.execute(
                 "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
                 [key, json.dumps(genres), src],
             )
             count += 1
-        
+
         con_sql.commit()
         con_sql.close()
         log.info('Seeded %d bands from DuckDB into genre cache', count)
@@ -134,15 +141,22 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
         return 0
 
 
-def _cache_set(band: str, genres: List[str], source: str, db_path: str = CACHE_DB) -> None:
-    """Store genre result in cache."""
+def _cache_set(band: str, genres: List[str], source: str, conn: sqlite3.Connection = None, db_path: str = CACHE_DB) -> None:
+    """Store genre result in cache. If conn is provided, use it; otherwise open/close."""
     key = _band_key(band)
-    con = sqlite3.connect(db_path)
-    con.execute(
-        "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
-        [key, json.dumps(genres), source],
-    )
-    con.close()
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
+            [key, json.dumps(genres), source],
+        )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _band_key(band: str) -> str:
@@ -382,51 +396,62 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
     Uses cache → DuckDB → Last.fm → MusicBrainz chain.
     """
     global _duckdb_seeded
-    _init_cache()
-    # Seed cache from DuckDB on first call (cheap, idempotent)
-    if not force and not _duckdb_seeded:
-        _duckdb_seeded = True
-        seed_cache_from_duckdb(duckdb_path)
+    conn = _init_cache()
+    try:
+        # Seed cache from DuckDB on first call (cheap, idempotent)
+        if not force and not _duckdb_seeded:
+            _duckdb_seeded = True
+            seed_cache_from_duckdb(duckdb_path)
 
-    # Clean the artist name for lookup
-    artist = clean_artist_name(band)
-    if not artist or len(artist) < 2:
-        return {"genres": [], "source": "skipped", "is_heavy": False}
-    
-    # Skip non-music entries early (no API call needed)
-    if _is_non_music(artist):
-        _cache_set(artist, [], "skipped")
-        return {"genres": [], "source": "skipped", "is_heavy": False}
+        # Clean the artist name for lookup
+        artist = clean_artist_name(band)
+        if not artist or len(artist) < 2:
+            return {"genres": [], "source": "skipped", "is_heavy": False}
 
-    # Check cache (use cleaned artist name)
-    if not force:
-        cached = _cache_get(artist)
-        if cached:
-            cached["is_heavy"] = _is_heavy(cached["genres"])
-            return cached
+        # Skip non-music entries early (no API call needed)
+        if _is_non_music(artist):
+            _cache_set(artist, [], "skipped", conn=conn)
+            conn.commit()
+            return {"genres": [], "source": "skipped", "is_heavy": False}
 
-    # Try Last.fm
-    genres = _lastfm_lookup(artist)
-    if genres:
-        # Last.fm returns ~100 tags, many irrelevant. Take top 15.
-        genres = genres[:15]
-        _cache_set(artist, genres, "lastfm")
-        log.info("Last.fm: %s → %s", artist, genres[:5])
-        return {"genres": genres, "source": "lastfm", "is_heavy": _is_heavy(genres)}
+        # Check cache (use cleaned artist name)
+        if not force:
+            cached = _cache_get(artist, conn=conn)
+            if cached:
+                # Skip if already tried MusicBrainz and got nothing
+                if cached["source"] in ("musicbrainz_tried", "unknown"):
+                    cached["is_heavy"] = _is_heavy(cached["genres"])
+                    return cached
+                cached["is_heavy"] = _is_heavy(cached["genres"])
+                return cached
 
-    # Rate limit for MusicBrainz
-    time.sleep(1.1)
+        # Try Last.fm
+        genres = _lastfm_lookup(artist)
+        if genres:
+            # Last.fm returns ~100 tags, many irrelevant. Take top 15.
+            genres = genres[:15]
+            _cache_set(artist, genres, "lastfm", conn=conn)
+            conn.commit()
+            log.info("Last.fm: %s → %s", artist, genres[:5])
+            return {"genres": genres, "source": "lastfm", "is_heavy": _is_heavy(genres)}
 
-    # Try MusicBrainz
-    genres = _musicbrainz_lookup(artist)
-    if genres:
-        _cache_set(artist, genres, "musicbrainz")
-        log.info("MusicBrainz: %s → %s", artist, genres[:5])
-        return {"genres": genres, "source": "musicbrainz", "is_heavy": _is_heavy(genres)}
+        # Rate limit for MusicBrainz
+        time.sleep(1.1)
 
-    # Unknown
-    _cache_set(artist, [], "unknown")
-    return {"genres": [], "source": "unknown", "is_heavy": False}
+        # Try MusicBrainz
+        genres = _musicbrainz_lookup(artist)
+        if genres:
+            _cache_set(artist, genres, "musicbrainz", conn=conn)
+            conn.commit()
+            log.info("MusicBrainz: %s → %s", artist, genres[:5])
+            return {"genres": genres, "source": "musicbrainz", "is_heavy": _is_heavy(genres)}
+
+        # Unknown — mark as musicbrainz_tried so we don't retry next time
+        _cache_set(artist, [], "musicbrainz_tried", conn=conn)
+        conn.commit()
+        return {"genres": [], "source": "unknown", "is_heavy": False}
+    finally:
+        conn.close()
 
 
 def _is_heavy(genres: List[str]) -> bool:
@@ -442,14 +467,100 @@ def _is_heavy(genres: List[str]) -> bool:
 
 
 def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
-    """Look up genres for multiple bands."""
-    results = {}
-    for band in bands:
-        artist = clean_artist_name(band)
-        if artist:
-            results[band] = lookup_genres(band)
-            time.sleep(0.2)  # Be polite to APIs
-    return results
+    """Look up genres for multiple bands.
+
+    Uses parallel Last.fm lookups (4 workers) followed by a rate-limited
+    MusicBrainz queue (1 req/sec) for any misses.
+    """
+    global _duckdb_seeded
+    conn = _init_cache()
+
+    try:
+        # Seed cache from DuckDB on first call
+        if not _duckdb_seeded:
+            _duckdb_seeded = True
+            seed_cache_from_duckdb()
+
+        results = {}
+        # Step 1: Prepare all bands — clean names, check cache, classify
+        lastfm_candidates = []   # (original_band, artist_name)
+        mb_candidates = []       # (original_band, artist_name)
+        mb_skip = set()          # band keys to skip (already tried MB)
+
+        for band in bands:
+            artist = clean_artist_name(band)
+            if not artist or len(artist) < 2:
+                results[band] = {"genres": [], "source": "skipped", "is_heavy": False}
+                continue
+
+            if _is_non_music(artist):
+                _cache_set(artist, [], "skipped", conn=conn)
+                results[band] = {"genres": [], "source": "skipped", "is_heavy": False}
+                continue
+
+            # Check cache
+            cached = _cache_get(artist, conn=conn)
+            if cached:
+                # Skip if already tried MusicBrainz and got nothing
+                if cached["source"] in ("musicbrainz_tried", "unknown"):
+                    cached["is_heavy"] = _is_heavy(cached["genres"])
+                    results[band] = cached
+                    continue
+                cached["is_heavy"] = _is_heavy(cached["genres"])
+                results[band] = cached
+                continue
+
+            # Not cached — needs Last.fm lookup
+            lastfm_candidates.append((band, artist))
+
+        # Step 2: Parallel Last.fm lookups
+        if lastfm_candidates:
+            log.info("Running parallel Last.fm lookups for %d bands...", len(lastfm_candidates))
+
+            def _do_lastfm(item):
+                band, artist = item
+                genres = _lastfm_lookup(artist)
+                return (band, artist, genres)
+
+            # 4 workers, Last.fm allows ~5 req/sec
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {executor.submit(_do_lastfm, item): item for item in lastfm_candidates}
+
+                for future in as_completed(futures):
+                    band, artist, genres = future.result()
+                    if genres:
+                        genres = genres[:15]
+                        _cache_set(artist, genres, "lastfm", conn=conn)
+                        conn.commit()
+                        log.info("Last.fm: %s → %s", artist, genres[:5])
+                        results[band] = {"genres": genres, "source": "lastfm", "is_heavy": _is_heavy(genres)}
+                    else:
+                        # Last.fm missed — queue for MusicBrainz
+                        mb_candidates.append((band, artist))
+
+        # Step 3: MusicBrainz batch queue with rate limiting (1 req/sec)
+        if mb_candidates:
+            log.info("Running rate-limited MusicBrainz lookups for %d bands...", len(mb_candidates))
+            for i, (band, artist) in enumerate(mb_candidates):
+                if i > 0:
+                    time.sleep(1.1)  # MusicBrainz allows 1 req/sec
+
+                genres = _musicbrainz_lookup(artist)
+                if genres:
+                    _cache_set(artist, genres, "musicbrainz", conn=conn)
+                    conn.commit()
+                    log.info("MusicBrainz: %s → %s", artist, genres[:5])
+                    results[band] = {"genres": genres, "source": "musicbrainz", "is_heavy": _is_heavy(genres)}
+                else:
+                    # Mark as tried so we don't retry next time
+                    _cache_set(artist, [], "musicbrainz_tried", conn=conn)
+                    conn.commit()
+                    results[band] = {"genres": [], "source": "unknown", "is_heavy": False}
+
+        return results
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
