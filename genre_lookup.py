@@ -539,6 +539,13 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
                         mb_candidates.append((band, artist))
 
         # Step 3: MusicBrainz batch queue with rate limiting (1 req/sec)
+        # Cap at 30 MB lookups to prevent timeout — uncached bands next run
+        MB_CAP = 30
+        if len(mb_candidates) > MB_CAP:
+            log.warning("Capping MusicBrainz lookups to %d of %d candidates", MB_CAP, len(mb_candidates))
+            # Prioritise shorter (more likely real) artist names
+            mb_candidates = sorted(mb_candidates, key=lambda x: len(x[1]))[:MB_CAP]
+
         if mb_candidates:
             log.info("Running rate-limited MusicBrainz lookups for %d bands...", len(mb_candidates))
             for i, (band, artist) in enumerate(mb_candidates):
@@ -556,6 +563,13 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
                     _cache_set(artist, [], "musicbrainz_tried", conn=conn)
                     conn.commit()
                     results[band] = {"genres": [], "source": "unknown", "is_heavy": False}
+
+        # Mark remaining (uncapped) candidates as skipped so they get picked up next run
+        for band, artist in mb_candidates:
+            if band not in results:
+                _cache_set(artist, [], "musicbrainz_tried", conn=conn)
+                results[band] = {"genres": [], "source": "unknown", "is_heavy": False}
+        conn.commit()
 
         return results
 
