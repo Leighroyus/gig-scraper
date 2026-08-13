@@ -31,8 +31,20 @@ except ImportError:
     pass
 
 from playwright.sync_api import sync_playwright
+from lineup_parser import LineupParser, load_known_artists, load_venue_names
 
 log = logging.getLogger(__name__)
+
+# Lazy-init lineup parser (loaded once on first use)
+_lineup_parser = None
+def _get_lineup_parser():
+    global _lineup_parser
+    if _lineup_parser is None:
+        _lineup_parser = LineupParser(
+            known_artists=load_known_artists(),
+            venue_names=load_venue_names(),
+        )
+    return _lineup_parser
 
 # Cache DNS check results to avoid repeated lookups
 _dns_cache: Dict[str, bool] = {}
@@ -292,38 +304,39 @@ def _extract_gig(element, venue_name: str, selectors: Optional[Dict] = None) -> 
             text = element.get_text(strip=True)
             date_match = _extract_date(text)
 
-        # --- Clean band name ---
+        # --- Clean band name via LineupParser ---
+        parsed = None
         if band_name:
-            band_name = re.sub(r'^(live|presents|featuring|with|at)\s+', '', band_name, flags=re.IGNORECASE)
-            band_name = re.sub(r'\s+(live|show|concert|gig)$', '', band_name, flags=re.IGNORECASE)
-            band_name = band_name.strip()
-
-            # Per-venue non-gig exclusions (loaded from config, not hardcoded)
-            # These are the bare-minimum universal patterns only
-            universal_non_gig = [
-                r'saturdays?\s+at\s+the\s+corner',
-                r'fridays?\s+at\s+the\s+corner',
-                r'sunday\s+roast',
-                r'steak\s+night',
-                r'parma\s*night',
-                r'footy\s+tipping',
-                r'trivia',
-            ]
-            for pattern in universal_non_gig:
-                if re.search(pattern, band_name, re.IGNORECASE):
-                    return None
-
-            # Per-venue filter patterns from venues.json
+            # Keep any existing venue-specific exclusions from venues.json
             for pattern in venue_exclusion_patterns(venue_name):
                 if re.search(pattern, band_name, re.IGNORECASE):
                     return None
+
+            parser = _get_lineup_parser()
+            parsed = parser.parse(band_name, venue=venue_name)
+
+            if not parsed.is_gig:
+                return None
+
+            if not parsed.names:
+                return None
+
+            # Use headliner as the primary band name for backward compat
+            band_name = parsed.headliner
 
         if band_name and len(band_name) > 2:
             clean_date = date_match or 'TBA'
             if clean_date != 'TBA':
                 clean_date = re.sub(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)(\d)', r'\1 \2', clean_date)
                 clean_date = re.sub(r'(\d{1,2})\s*(\d{4})', r'\1, \2', clean_date)
-            return {'band': band_name, 'venue': venue_name, 'date': clean_date}
+            result = {'band': band_name, 'venue': venue_name, 'date': clean_date}
+            # Attach full parsed lineup for downstream use (genre lookup, etc.)
+            if parsed and len(parsed.names) > 1:
+                result['lineup'] = parsed.names
+                result['support'] = parsed.names[1:]
+            if parsed.needs_review:
+                result['needs_review'] = True
+            return result
 
     except Exception as e:
         log.error("Error extracting gig info from %s: %s", venue_name, e)
