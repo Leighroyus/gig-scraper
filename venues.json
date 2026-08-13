@@ -107,6 +107,18 @@
       "note": "Algolia/Oztix site - Footscray (switched to API 2026-07-25)"
     },
     {
+      "name": "John Curtin Hotel",
+      "url": "https://www.johncurtinhotel.com/gigs",
+      "type": "js",
+      "selectors": {
+        "container": ".collection-item-2",
+        "title": "h2.heading-4",
+        "support": "h2.heading-5",
+        "date": ".date"
+      },
+      "note": "Webflow/Oztix site - Carlton (added 2026-08-07)"
+    },
+    {
       "name": "The Croxton Bandroom",
       "url": "http://thecroxton.com.au",
       "type": "algolia",
@@ -142,13 +154,13 @@
     {
       "name": "Torquay Hotel",
       "url": "https://torquayhotel.com.au/gigs/",
-      "type": "scrapeops",
+      "type": "static",
       "selectors": {
         "container": ".gig",
         "title": ".gig__name",
         "date": ".gig__date"
       },
-      "note": "Uses ScrapeOps"
+      "note": "Cloudflare-protected — uses curl_cffi TLS impersonation"
     }
   ]
 }

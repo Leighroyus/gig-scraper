@@ -15,7 +15,13 @@ from typing import List, Dict, Optional
 from urllib.parse import urlparse
 
 import socket
-import requests
+try:
+    from curl_cffi import requests as cf_requests
+    _use_cffi = True
+except ImportError:
+    cf_requests = None
+    _use_cffi = False
+import requests as _requests_fallback
 from bs4 import BeautifulSoup
 
 try:
@@ -100,7 +106,7 @@ def _fetch_algolia(venue_name: str, index: str = 'prod_oztix_eventguide_past_eve
         }]
     }
     try:
-        r = requests.post(_ALGOLIA_BASE_URL, headers=_ALGOLIA_HEADERS, json=payload, timeout=15)
+        r = _requests_fallback.post(_ALGOLIA_BASE_URL, headers=_ALGOLIA_HEADERS, json=payload, timeout=15)
         r.raise_for_status()
         hits = r.json()['results'][0]['hits']
     except Exception as e:
@@ -127,42 +133,34 @@ def _fetch_algolia(venue_name: str, index: str = 'prod_oztix_eventguide_past_eve
 # HTML acquisition helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_static(session: requests.Session, url: str, max_retries: int = 3, base_delay: float = 1.0) -> str:
-    """Fetch a URL with retries and exponential backoff. Returns HTML string."""
+def _fetch_static(url: str, max_retries: int = 3, base_delay: float = 1.0) -> str:
+    """Fetch a URL with TLS fingerprint impersonation via curl_cffi.
+
+    Falls back to plain requests if curl_cffi is not installed.
+    """
+    use_cffi = _use_cffi
     for attempt in range(max_retries):
         try:
-            response = session.get(url, timeout=10)
+            if use_cffi:
+                response = cf_requests.get(url, impersonate='chrome124', timeout=10)
+            else:
+                response = _requests_fallback.get(url, timeout=10,
+                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'})
             response.raise_for_status()
             return response.text
-        except (requests.RequestException, requests.HTTPError) as e:
+        except Exception as e:
             if attempt == max_retries - 1:
                 raise
             delay = base_delay * (2 ** attempt)
             log.warning("Request failed (attempt %d/%d): %s. Retrying in %ds…", attempt + 1, max_retries, e, delay)
             time.sleep(delay)
-    raise requests.RequestException(f"Failed to fetch {url} after {max_retries} attempts")
+    raise Exception(f"Failed to fetch {url} after {max_retries} attempts")
 
 
-def _fetch_scrapeops(session: requests.Session, url: str, api_key: str, max_retries: int = 3, base_delay: float = 2.0) -> str:
-    """Fetch via ScrapeOps proxy with retries and exponential backoff. Returns HTML string."""
-    if not api_key:
-        raise ValueError("ScrapeOps API key is blank — set SCRAPEOPS_API_KEY")
-    proxy_url = "https://proxy.scrapeops.io/v1/"
-    params = {"api_key": api_key, "url": url, "render_js": "true"}
-    last_err = None
-    for attempt in range(max_retries):
-        try:
-            response = session.get(proxy_url, params=params, timeout=120)
-            response.raise_for_status()
-            return response.text
-        except (requests.RequestException, requests.HTTPError) as e:
-            last_err = e
-            if attempt == max_retries - 1:
-                break
-            delay = base_delay * (2 ** attempt)
-            log.warning("ScrapeOps request failed (attempt %d/%d) for %s: %s. Retrying in %ds…", attempt + 1, max_retries, url, e, delay)
-            time.sleep(delay)
-    raise requests.RequestException(f"ScrapeOps failed for {url} after {max_retries} attempts: {last_err}")
+def _fetch_scrapeops_deprecated(url: str, max_retries: int = 3, base_delay: float = 2.0) -> str:
+    """DEPRECATED: ScrapeOps is no longer needed. Kept for reference only."""
+    log.warning("_fetch_scrapeops_deprecated called — this should not happen. Venue config may still reference type=scrapeops")
+    raise NotImplementedError("ScrapeOps proxy removed — use curl_cffi (type=static) or Algolia (type=algolia) instead")
 
 
 def _fetch_playwright(url: str, wait_for_selector: str = None, timeout: int = 30000, wait_time: int = 5000, browser=None, max_retries: int = 2, base_delay: float = 3.0) -> str:
@@ -260,6 +258,12 @@ def _extract_gig(element, venue_name: str, selectors: Optional[Dict] = None) -> 
                 title_elem = element.select_one(title_sel)
                 if title_elem:
                     band_name = title_elem.get_text(strip=True)
+                    # Also check for support acts in heading-5 (John Curtin style)
+                    support_sel = selectors.get('support', '')
+                    if support_sel:
+                        support_elem = element.select_one(support_sel)
+                        if support_elem and support_elem.get_text(strip=True):
+                            band_name += ' ' + support_elem.get_text(strip=True)
 
             date_sel = selectors.get('date', '')
             if date_sel:
@@ -338,6 +342,8 @@ _DATE_PATTERNS = [
     r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})',
     # Day-of-week + day + month + time (no year): e.g. "Sun 12 Jul 07:00pm"
     r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}:\d{2}\s*(?:am|pm)?)',
+    # FIX: day-of-week + day + month (no year) — e.g. "SATURDAY 8 AUGUST"
+    r'((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)',
 ]
 
 
@@ -380,15 +386,10 @@ def venue_exclusion_patterns(venue_name: str) -> List[str]:
 
 class GigScraper:
     def __init__(self, config_file: str = 'venues.json', event_limit: int = 10, request_delay: float = 2.0):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        })
         self.config_file = config_file
         self.event_limit = event_limit
         self.request_delay = request_delay
         self.venues = self._load_venues()
-        self.scrapeops_key = os.environ.get("SCRAPEOPS_API_KEY", "").strip()
         _load_venue_exclusions(self.venues)
 
     def _load_venues(self) -> Dict:
@@ -405,7 +406,9 @@ class GigScraper:
         """Get HTML for a venue using the appropriate method."""
         vtype = venue.get('type', '')
         if vtype == 'scrapeops':
-            return _fetch_scrapeops(self.session, venue['url'], self.scrapeops_key)
+            # Fallback: treat scrapeops venues as static (curl_cffi handles Cloudflare)
+            log.info("%s has type=scrapeops — using curl_cffi instead", venue['name'])
+            return _fetch_static(venue['url'])
         elif venue.get('requires_js', False) or vtype == 'js':
             wait_for = venue.get('wait_for_selector')
             html = _fetch_playwright(
@@ -426,7 +429,7 @@ class GigScraper:
                     )
             return html
         else:
-            html = _fetch_static(self.session, venue['url'])
+            html = _fetch_static(venue['url'])
             # Basic 404 check
             soup = BeautifulSoup(html, 'html.parser')
             page_text = soup.get_text().lower()
@@ -470,7 +473,7 @@ class GigScraper:
                     continue
 
                 # FIX: skip DNS check for ScrapeOps venues (they resolve server-side)
-                if venue.get('type') != 'scrapeops' and not _check_dns(venue['url']):
+                if not _check_dns(venue['url']):
                     log.warning("Skipping %s (DNS resolution failed)", venue['name'])
                     continue
                 
@@ -566,19 +569,10 @@ def main():
                         help='Delete gigs older than N days from DB (default: 90, 0=disable)')
     args = parser.parse_args()
 
-    # Validate ScrapeOps key early if any venue needs it
-    scrapeops_key = os.environ.get("SCRAPEOPS_API_KEY", "").strip()
-
     scraper = GigScraper(event_limit=args.limit, request_delay=args.delay)
 
-    # Check if any venue actually needs ScrapeOps
-    all_venues = []
-    regions = ['melbourne', 'geelong', 'surfcoast'] if args.region == 'all' else [args.region]
-    for r in regions:
-        all_venues.extend(scraper.venues.get(r, []))
-    if any(v.get('type') == 'scrapeops' for v in all_venues) and not scrapeops_key:
-        log.error("SCRAPEOPS_API_KEY not set but at least one venue requires ScrapeOps. Set the env var or change venue type.")
-        sys.exit(1)
+    if not _use_cffi:
+        log.warning("curl_cffi not installed — falling back to plain requests (may hit Cloudflare blocks). pip install curl_cffi")
 
     # BUG FIX #11: import gig_store here so it's always available
     from gig_store import init_db, upsert_gigs, mark_notified, cleanup_old_gigs
@@ -596,6 +590,7 @@ def main():
     # Scrape
     if args.region == 'all':
         all_gigs = []
+        regions = ['melbourne', 'geelong', 'surfcoast']
         for region in regions:
             gigs = scraper.scrape_region(region)
             all_gigs.extend(gigs)
@@ -620,21 +615,19 @@ def main():
     else:
         display_gigs = all_gigs
 
-    # Genre enrichment
+    # Genre enrichment (parallel via batch_lookup)
     if args.enrich_genres:
-        from genre_lookup import lookup_genres
+        from genre_lookup import batch_lookup
         from gig_store import update_gig_genres
-        bands_seen = set()
+        unique_bands = list({g['band'] for g in display_gigs if len(g['band']) > 2})
+        log.info("Enriching genres for %d unique bands…", len(unique_bands))
+        genre_results = batch_lookup(unique_bands)
         for gig in display_gigs:
             band = gig['band']
-            if band in bands_seen:
-                continue
-            bands_seen.add(band)
-            genre_result = lookup_genres(band)
-            update_gig_genres(band, genre_result['genres'], genre_result['is_heavy'], genre_result['source'], db_path=db_path)
-            gig['genres'] = genre_result['genres']
-            gig['is_heavy'] = genre_result['is_heavy']
-            log.info("%s %s → %s", '🔥' if genre_result['is_heavy'] else '  ', band, genre_result['genres'][:3])
+            gr = genre_results.get(band, {"genres": [], "is_heavy": False, "source": "skipped"})
+            update_gig_genres(band, gr['genres'], gr['is_heavy'], gr['source'], db_path=db_path)
+            gig['genres'] = gr['genres']
+            gig['is_heavy'] = gr['is_heavy']
 
     # Genre filter
     if args.genre == 'heavy':
