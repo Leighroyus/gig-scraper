@@ -12,6 +12,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
+from lineup_parser import LineupParser, load_known_artists, load_venue_names
+
 try:
     import dateparser
 except ImportError:
@@ -311,13 +313,25 @@ def _event_key(raw_title: str, venue: str, date: str) -> str:
 # Core persistence
 # ---------------------------------------------------------------------------
 
+# Lazy-init LineupParser (same pattern as gig_scraper.py)
+_lineup_parser = None
+
+
+def _get_lineup_parser():
+    global _lineup_parser
+    if _lineup_parser is None:
+        _lineup_parser = LineupParser(
+            known_artists=load_known_artists(),
+            venue_names=load_venue_names(),
+        )
+    return _lineup_parser
+
+
 def upsert_gigs(gigs: List[Dict], db_path: str = DB_PATH) -> Dict:
     """Insert or update gigs. Splits multi-band titles into individual bands.
 
     Returns dict with 'new' and 'seen' lists (backward-compatible format).
     """
-    from genre_lookup import split_artists
-
     now = datetime.now()
     new_gigs = []
     seen_gigs = []
@@ -352,10 +366,13 @@ def upsert_gigs(gigs: List[Dict], db_path: str = DB_PATH) -> Dict:
                 )
                 new_gigs.append(gig)
 
-            # Split title into bands
-            band_names = split_artists(raw_title)
+            # Prefer pre-parsed lineup from scraper; fall back to parser
+            band_names = gig.get('lineup')
             if not band_names:
-                # Fallback: treat the whole title as one band
+                parser = _get_lineup_parser()
+                parsed = parser.parse(raw_title, venue=venue)
+                band_names = parsed.names if parsed.is_gig else [raw_title]
+            if not band_names:
                 band_names = [raw_title]
 
             for band_name in band_names:
@@ -454,7 +471,7 @@ def get_all_gigs(db_path: str = DB_PATH) -> List[Dict]:
     result = []
     for r in rows:
         result.append({
-            'band': r[1],          # band name (cleaned via split_artists)
+            'band': r[1],          # band name (from LineupParser)
             'venue': r[2],
             'date': r[3],
             'date_iso': r[4],

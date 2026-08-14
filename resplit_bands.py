@@ -2,11 +2,14 @@
 """Re-split multi-band entries and enrich with genres."""
 
 from gig_store import _connect, _next_id
-from genre_lookup import split_artists, clean_artist_name, lookup_genres
+from genre_lookup import clean_artist_name, lookup_genres
+from lineup_parser import LineupParser, load_known_artists, load_venue_names
 import json, time, logging
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 log = logging.getLogger(__name__)
+
+parser = LineupParser(load_known_artists(), load_venue_names())
 
 def main():
     con = _connect()
@@ -25,7 +28,8 @@ def main():
 
     fixed = 0
     for band_id, name in rows:
-        bands = split_artists(name)
+        parsed = parser.parse(name)
+        bands = parsed.names if parsed.is_gig else []
         if len(bands) <= 1:
             continue
         
