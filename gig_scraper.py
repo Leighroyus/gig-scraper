@@ -637,10 +637,11 @@ def main():
         genre_results = batch_lookup(unique_bands)
         for gig in display_gigs:
             band = gig['band']
-            gr = genre_results.get(band, {"genres": [], "is_heavy": False, "source": "skipped"})
-            update_gig_genres(band, gr['genres'], gr['is_heavy'], gr['source'], db_path=db_path)
+            gr = genre_results.get(band, {"genres": [], "is_heavy": False, "source": "skipped", "heavy_score": 0.0})
+            update_gig_genres(band, gr['genres'], gr['is_heavy'], gr['source'], db_path=db_path, heavy_score=gr.get('heavy_score', 0.0))
             gig['genres'] = gr['genres']
             gig['is_heavy'] = gr['is_heavy']
+            gig['heavy_score'] = gr.get('heavy_score', 0.0)
 
     # Genre filter
     if args.genre == 'heavy':

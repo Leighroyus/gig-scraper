@@ -27,28 +27,59 @@ log = logging.getLogger(__name__)
 LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "").strip()
 CACHE_DB = os.environ.get("GENRE_CACHE_DB", os.path.join(os.path.dirname(__file__), "genre_cache.db"))
 
-# Genre keywords that count as "heavy"
+# Genre keywords that count as "heavy" with confidence weights.
+# Weight 1.0 = unambiguous heavy, 0.6-0.8 = usually heavy, 0.3-0.5 = borderline.
 HEAVY_GENRES = {
-    # Metal — always heavy
-    "metal", "death metal", "black metal", "thrash metal", "groove metal",
-    "stoner metal", "doom metal", "sludge metal", "deathcore", "metalcore",
-    "progressive metal", "nu metal", "djent", "power metal", "speed metal",
-    "symphonic metal", "folk metal", "viking metal", "gothic metal",
-    "avant-garde metal", "alternative metal", "crossover thrash",
-    "funeral doom", "drone metal", "blackgaze", "post-metal",
-    "atmospheric black metal", "depressive black metal", "raw black metal",
-    "blackened doom", "stoner doom metal", "death doom metal",
-    "brutal death metal", "melodic death metal", "progressive metalcore",
-    "mathcore", "grindcore", "deathgrind", "noisecore",
-    # Punk/hardcore — always heavy
-    "hardcore", "hardcore punk", "powerviolence", "crust punk",
-    "screamo", "emo violence", "d-beat", "oi",
-    "skate punk", "melodic hardcore", "street punk", "horror punk",
-    "anarcho punk", "punk", "punk rock", "garage punk", "ska punk",
-    # Other unambiguous
-    "doom", "sludge", "thrash", "stoner rock", "noise rock",
-    "math rock", "psychobilly", "crust",
+    # Metal — always heavy (1.0)
+    "metal": 1.0, "death metal": 1.0, "black metal": 1.0, "thrash metal": 1.0,
+    "groove metal": 1.0, "stoner metal": 1.0, "doom metal": 1.0,
+    "sludge metal": 1.0, "deathcore": 1.0, "metalcore": 1.0,
+    "progressive metal": 1.0, "nu metal": 1.0, "djent": 1.0,
+    "power metal": 0.9, "speed metal": 1.0, "symphonic metal": 0.9,
+    "folk metal": 0.8, "viking metal": 0.9, "gothic metal": 0.8,
+    "avant-garde metal": 0.9, "alternative metal": 0.7,
+    "crossover thrash": 1.0, "funeral doom": 1.0, "drone metal": 1.0,
+    "blackgaze": 1.0, "post-metal": 0.8, "atmospheric black metal": 1.0,
+    "depressive black metal": 1.0, "raw black metal": 1.0,
+    "blackened doom": 1.0, "stoner doom metal": 1.0, "death doom metal": 1.0,
+    "brutal death metal": 1.0, "melodic death metal": 1.0,
+    "progressive metalcore": 1.0, "mathcore": 1.0, "grindcore": 1.0,
+    "deathgrind": 1.0, "noisecore": 1.0,
+    # Punk/hardcore — always heavy (1.0)
+    "hardcore": 1.0, "hardcore punk": 1.0, "powerviolence": 1.0,
+    "crust punk": 1.0, "screamo": 1.0, "emo violence": 1.0,
+    "d-beat": 1.0, "oi": 0.9, "skate punk": 0.6, "melodic hardcore": 0.7,
+    "street punk": 0.8, "horror punk": 0.7, "anarcho punk": 0.8,
+    "punk": 0.6, "punk rock": 0.6, "garage punk": 0.6, "ska punk": 0.3,
+    # Other heavy-adjacent
+    "doom": 1.0, "sludge": 1.0, "thrash": 1.0, "stoner rock": 0.9,
+    "noise rock": 0.7, "math rock": 0.5, "psychobilly": 0.7, "crust": 0.9,
+    # Hard rock / industrial
+    "hard rock": 0.5, "industrial": 0.7, "industrial metal": 1.0, "industrial rock": 0.6,
+
+    # Non-heavy genres (for penalty calculation)
+    "rock": 0.0, "pop": 0.0, "indie": 0.0, "indie rock": 0.0,
+    "alternative rock": 0.0, "electronic": 0.0, "pop punk": 0.1,
+    "emo": 0.1, "post-punk": 0.2,
 }
+
+# Confidence thresholds
+HEAVY_THRESHOLD = 0.65       # Score >= this = definitely heavy
+BORDERLINE_LOW = 0.35        # Score >= this but < HEAVY_THRESHOLD = ask user
+BORDERLINE_HIGH = 0.65       # Score >= this = definitely heavy (alias)
+REJECT_THRESHOLD = 0.35      # Score < this = definitely not heavy
+BORDERLINE_ZONES = (BORDERLINE_LOW, HEAVY_THRESHOLD)  # (0.35, 0.65)
+
+def is_heavy_confident(score: float) -> str:
+    """Classify a confidence score into a decision.
+    Returns: 'yes', 'no', or 'borderline'.
+    """
+    if score >= HEAVY_THRESHOLD:
+        return 'yes'
+    elif score < BORDERLINE_LOW:
+        return 'no'
+    else:
+        return 'borderline'
 
 
 def _init_cache(db_path: str = CACHE_DB) -> sqlite3.Connection:
@@ -141,16 +172,22 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
         return 0
 
 
-def _cache_set(band: str, genres: List[str], source: str, conn: sqlite3.Connection = None, db_path: str = CACHE_DB) -> None:
+def _cache_set(band: str, genres: List[str], source: str, conn: sqlite3.Connection = None, db_path: str = CACHE_DB, heavy_score: float = 0.0, tags_json: str = None) -> None:
     """Store genre result in cache. If conn is provided, use it; otherwise open/close."""
     key = _band_key(band)
     own_conn = conn is None
     if own_conn:
         conn = sqlite3.connect(db_path)
     try:
+        # Ensure heavy_score and tags columns exist (migration)
+        try:
+            conn.execute("SELECT heavy_score FROM genre_cache LIMIT 1")
+        except Exception:
+            conn.execute("ALTER TABLE genre_cache ADD COLUMN heavy_score REAL DEFAULT 0.0")
+            conn.execute("ALTER TABLE genre_cache ADD COLUMN tags_json TEXT")
         conn.execute(
-            "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
-            [key, json.dumps(genres), source],
+            "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at, heavy_score, tags_json) VALUES (?, ?, ?, datetime('now'), ?, ?)",
+            [key, json.dumps(genres), source, heavy_score, tags_json],
         )
         if own_conn:
             conn.commit()
@@ -170,6 +207,8 @@ def _band_key(band: str) -> str:
 
 # Prefixes/suffixes to strip before splitting
 _STRIP_PATTERNS = [
+    # Ticket-status prefixes (must come first — these are common)
+    r"^(?:SELLING\s+FAST|SOLD\s+OUT|WAITLIST|FREE\s+ENTRY|TICKETS?\s+(?:ON\s+SALE|AVAILABLE))\s*[–\-—]?\s*",
     # Event type prefixes (with optional colon)
     r"^(?:EP|Album|Single|Demo|Tape|Release)\s+Launch\s*[:\-–—]?\s*",
     r"^(?:EP|Album|Single|Demo|Tape|Release)\s+Tour\s*[:\-–—]?\s*",
@@ -180,10 +219,9 @@ _STRIP_PATTERNS = [
     # Venue prefixes (e.g. "The Tote presents")
     r"^(?:The\s+)?(?:Corner\s+Hotel|Tote|Tote\s+Hotel|Max\s+Watts|Shotkickers|"
     r"Bendigo\s+Hotel|Night\s+Hawks|Cherry\s+Bar|Old\s+Bar|Evelyn\s+Hotel|"
-    r"Kindred\s+Studios|Croxton\s+Bandroom|Barwon\s+Club|Torquay\s+Hotel|"
-    r"Northcote\s+Socialist|Cherry\s+Bar)\s+(?:presents?|at|@)\s+",
+    r"Kindred\s+Studios|Croxton\s+Bandroom|Barwon\s+Club|Barwon\s+Heads\s+Hotel|"
+    r"Torquay\s+Hotel|Northcote\s+Socialist|Cherry\s+Bar)\s+(?:presents?|at|@)\s+",
     # "Event Name: Band A & Band B" style (colon separator)
-    # Strip event-looking prefixes before a colon, e.g. "Punk in the Park: ..."
     r"^[A-Za-z0-9' ]+(?:Festival|Fest|Night|Presents?|Show|Launch|Tour|Weekend|in the Park|at the)\s*[:\-–—]\s*",
     # Generic "Word Word Word:" pattern (3+ words before colon) — likely an event name
     r"^(?:[A-Za-z' ]{3,}?)\s*:\s*",
@@ -193,11 +231,18 @@ _STRIP_PATTERNS = [
 
 # Suffixes to strip after splitting
 _STRIP_SUFFIXES = [
-    r"(?:–|—|-)\s*(?:'?\w+(?:'s)?\s+)?(?:Anniversary|Tour|EP|Album|Single|Launch|Shows?|Live|Supporting).*$",
+    r"\s*(?:–|—|-)\s*(?:'?\w+(?:'s)?\s+)?(?:Anniversary|Tour|EP|Album|Single|Launch|Shows?|Live|Supporting).*$",
     r"\s*\d+\+.*$",
     r"\s*(?:SELLING\s+FAST|SOLD\s+OUT|WAITLIST|FREE\s+ENTRY|TICKETS).*$",
     r"\s*\(.*?\)\s*$",
     r"\s*\[.*?\]\s*$",
+    # Venue names at end (common ones)
+    r"\s*[–\-—]?\s*(?:The\s+)?(?:Corner\s+Hotel|Tote\s+Hotel|Max\s+Watts|Shotkickers|"
+    r"Bendigo\s+Hotel|Night\s+Hawks|Cherry\s+Bar|Old\s+Bar|Evelyn\s+Hotel|"
+    r"Kindred\s+Studios|Croxton\s+Bandroom|Barwon\s+Club|Barwon\s+Heads\s+Hotel|"
+    r"Torquay\s+Hotel|Northcote\s+Socialist).*$",
+    # Country tags like (USA), (UK), (Australia)
+    r"\s*\(?\s*(?:USA|UK|Australia|AUS|Canada|Germany|Japan)\s*\)?\s*$",
 ]
 
 # Separators for splitting multi-band titles (ordered by specificity)
@@ -208,6 +253,10 @@ _SEPARATORS = [
     (r"\s+with\s+", re.IGNORECASE),
     (r"\s+and\s+", re.IGNORECASE),  # e.g. 'Neon Goblin and Black Wattle Witches'
     (r"\s+\+\s+", 0),
+    # Em-dash and en-dash as separators (e.g. "Frenzal Rhomb – Support Act")
+    (r"\s*[–—]\s+", 0),
+    # Comma separator for multi-band (e.g. "Band A, Band B")
+    (r"\s*,\s+", 0),
 ]
 
 
@@ -308,8 +357,8 @@ def clean_artist_name(raw: str) -> str:
 # Last.fm
 # ---------------------------------------------------------------------------
 
-def _lastfm_lookup(band: str) -> Optional[List[str]]:
-    """Query Last.fm artist.getTopTags. Returns list of tag names."""
+def _lastfm_lookup(band: str) -> Optional[List[Dict]]:
+    """Query Last.fm artist.getTopTags. Returns list of {name, count} dicts."""
     if not LASTFM_API_KEY:
         return None
     try:
@@ -326,7 +375,7 @@ def _lastfm_lookup(band: str) -> Optional[List[str]]:
         resp.raise_for_status()
         data = resp.json()
         toptags = data.get("toptags", {}).get("tag", [])
-        return [t["name"] for t in toptags if t.get("name")]
+        return [{"name": t["name"], "count": int(t.get("count", 0))} for t in toptags if t.get("name")]
     except Exception as e:
         log.warning("Last.fm lookup failed for %s: %s", band, e)
         return None
@@ -392,7 +441,7 @@ def _is_non_music(name: str) -> bool:
 
 def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Dict:
     """
-    Look up genres for a band. Returns dict with 'genres', 'source', 'is_heavy'.
+    Look up genres for a band. Returns dict with 'genres', 'source', 'is_heavy', 'heavy_score'.
     Uses cache → DuckDB → Last.fm → MusicBrainz chain.
     """
     global _duckdb_seeded
@@ -406,13 +455,13 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
         # Clean the artist name for lookup
         artist = clean_artist_name(band)
         if not artist or len(artist) < 2:
-            return {"genres": [], "source": "skipped", "is_heavy": False}
+            return {"genres": [], "source": "skipped", "is_heavy": False, "heavy_score": 0.0}
 
         # Skip non-music entries early (no API call needed)
         if _is_non_music(artist):
             _cache_set(artist, [], "skipped", conn=conn)
             conn.commit()
-            return {"genres": [], "source": "skipped", "is_heavy": False}
+            return {"genres": [], "source": "skipped", "is_heavy": False, "heavy_score": 0.0}
 
         # Check cache (use cleaned artist name)
         if not force:
@@ -421,19 +470,24 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
                 # Skip if already tried MusicBrainz and got nothing
                 if cached["source"] in ("musicbrainz_tried", "unknown"):
                     cached["is_heavy"] = _is_heavy(cached["genres"])
+                    cached["heavy_score"] = cached.get("heavy_score", 0.0)
                     return cached
                 cached["is_heavy"] = _is_heavy(cached["genres"])
+                cached["heavy_score"] = cached.get("heavy_score", 0.0)
                 return cached
 
         # Try Last.fm
-        genres = _lastfm_lookup(artist)
-        if genres:
+        tags = _lastfm_lookup(artist)
+        if tags:
             # Last.fm returns ~100 tags, many irrelevant. Take top 15.
-            genres = genres[:15]
-            _cache_set(artist, genres, "lastfm", conn=conn)
+            tags = tags[:15]
+            genres = [t["name"] for t in tags]
+            score = _calc_heavy_score(tags)
+            tags_json = json.dumps(tags)
+            _cache_set(artist, genres, "lastfm", conn=conn, heavy_score=score, tags_json=tags_json)
             conn.commit()
-            log.info("Last.fm: %s → %s", artist, genres[:5])
-            return {"genres": genres, "source": "lastfm", "is_heavy": _is_heavy(genres)}
+            log.info("Last.fm: %s → %s (score=%.2f)", artist, genres[:5], score)
+            return {"genres": genres, "source": "lastfm", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
 
         # Rate limit for MusicBrainz
         time.sleep(1.1)
@@ -441,29 +495,72 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
         # Try MusicBrainz
         genres = _musicbrainz_lookup(artist)
         if genres:
-            _cache_set(artist, genres, "musicbrainz", conn=conn)
+            score = _calc_heavy_score([{"name": g, "count": 50} for g in genres])
+            _cache_set(artist, genres, "musicbrainz", conn=conn, heavy_score=score)
             conn.commit()
-            log.info("MusicBrainz: %s → %s", artist, genres[:5])
-            return {"genres": genres, "source": "musicbrainz", "is_heavy": _is_heavy(genres)}
+            log.info("MusicBrainz: %s → %s (score=%.2f)", artist, genres[:5], score)
+            return {"genres": genres, "source": "musicbrainz", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
 
         # Unknown — mark as musicbrainz_tried so we don't retry next time
         _cache_set(artist, [], "musicbrainz_tried", conn=conn)
         conn.commit()
-        return {"genres": [], "source": "unknown", "is_heavy": False}
+        return {"genres": [], "source": "unknown", "is_heavy": False, "heavy_score": 0.0}
     finally:
         conn.close()
 
 
-def _is_heavy(genres: List[str]) -> bool:
-    """Check if any genre matches our heavy keywords."""
-    for g in genres:
-        g_lower = g.lower().strip()
-        for heavy in HEAVY_GENRES:
-            if g_lower == heavy:
-                return True
-            if heavy in g_lower:
-                return True
-    return False
+def _calc_heavy_score(tags: List[Dict]) -> float:
+    """Calculate a heavy confidence score from weighted genre tags.
+
+    Args:
+        tags: List of {name, count} dicts from Last.fm (count = 0-100).
+
+    Returns:
+        Score from 0.0 (definitely not heavy) to 1.0 (definitely heavy).
+    """
+    if not tags:
+        return 0.0
+
+    best_score = 0.0
+    heavy_matches = []
+
+    for tag in tags:
+        tag_name = tag["name"].lower().strip()
+        tag_count = tag.get("count", 0)  # 0-100 from Last.fm
+
+        # Find matching heavy genre
+        weight = None
+        for heavy_genre, genre_weight in HEAVY_GENRES.items():
+            if tag_name == heavy_genre or heavy_genre in tag_name:
+                weight = genre_weight
+                break
+
+        if weight is not None and weight > 0:
+            # Score = genre_weight * (tag_count / 100)
+            # A death metal tag at count=100 → 1.0
+            # A punk tag at count=50 → 0.3
+            tag_score = weight * (tag_count / 100.0)
+            heavy_matches.append((tag_name, weight, tag_count, tag_score))
+            best_score = max(best_score, tag_score)
+
+    # Bonus for multiple heavy genre matches (corroboration)
+    if len(heavy_matches) >= 2:
+        avg_top2 = sum(h[3] for h in heavy_matches[:2]) / 2.0
+        best_score = max(best_score, avg_top2)
+
+    # Cap at 1.0
+    return min(best_score, 1.0)
+
+
+def _is_heavy(tags) -> bool:
+    """Check if any genre matches our heavy keywords (legacy bool interface).
+    Accepts either List[str] or List[Dict] (with 'name' and 'count' keys).
+    """
+    # Normalise to list of dicts
+    if tags and isinstance(tags[0], str):
+        tags = [{"name": g, "count": 50} for g in tags]
+    score = _calc_heavy_score(tags)
+    return score >= HEAVY_THRESHOLD
 
 
 def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
@@ -490,12 +587,12 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
         for band in bands:
             artist = clean_artist_name(band)
             if not artist or len(artist) < 2:
-                results[band] = {"genres": [], "source": "skipped", "is_heavy": False}
+                results[band] = {"genres": [], "source": "skipped", "is_heavy": False, "heavy_score": 0.0}
                 continue
 
             if _is_non_music(artist):
                 _cache_set(artist, [], "skipped", conn=conn)
-                results[band] = {"genres": [], "source": "skipped", "is_heavy": False}
+                results[band] = {"genres": [], "source": "skipped", "is_heavy": False, "heavy_score": 0.0}
                 continue
 
             # Check cache
@@ -504,9 +601,11 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
                 # Skip if already tried MusicBrainz and got nothing
                 if cached["source"] in ("musicbrainz_tried", "unknown"):
                     cached["is_heavy"] = _is_heavy(cached["genres"])
+                    cached["heavy_score"] = cached.get("heavy_score", 0.0)
                     results[band] = cached
                     continue
                 cached["is_heavy"] = _is_heavy(cached["genres"])
+                cached["heavy_score"] = cached.get("heavy_score", 0.0)
                 results[band] = cached
                 continue
 
@@ -519,21 +618,24 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
 
             def _do_lastfm(item):
                 band, artist = item
-                genres = _lastfm_lookup(artist)
-                return (band, artist, genres)
+                tags = _lastfm_lookup(artist)
+                return (band, artist, tags)
 
             # 4 workers, Last.fm allows ~5 req/sec
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {executor.submit(_do_lastfm, item): item for item in lastfm_candidates}
 
                 for future in as_completed(futures):
-                    band, artist, genres = future.result()
-                    if genres:
-                        genres = genres[:15]
-                        _cache_set(artist, genres, "lastfm", conn=conn)
+                    band, artist, tags = future.result()
+                    if tags:
+                        tags = tags[:15]
+                        genres = [t["name"] for t in tags]
+                        score = _calc_heavy_score(tags)
+                        tags_json = json.dumps(tags)
+                        _cache_set(artist, genres, "lastfm", conn=conn, heavy_score=score, tags_json=tags_json)
                         conn.commit()
-                        log.info("Last.fm: %s → %s", artist, genres[:5])
-                        results[band] = {"genres": genres, "source": "lastfm", "is_heavy": _is_heavy(genres)}
+                        log.info("Last.fm: %s → %s (score=%.2f)", artist, genres[:5], score)
+                        results[band] = {"genres": genres, "source": "lastfm", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
                     else:
                         # Last.fm missed — queue for MusicBrainz
                         mb_candidates.append((band, artist))
@@ -557,20 +659,21 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
 
                 genres = _musicbrainz_lookup(artist)
                 if genres:
-                    _cache_set(artist, genres, "musicbrainz", conn=conn)
+                    score = _calc_heavy_score([{"name": g, "count": 50} for g in genres])
+                    _cache_set(artist, genres, "musicbrainz", conn=conn, heavy_score=score)
                     conn.commit()
-                    log.info("MusicBrainz: %s → %s", artist, genres[:5])
-                    results[band] = {"genres": genres, "source": "musicbrainz", "is_heavy": _is_heavy(genres)}
+                    log.info("MusicBrainz: %s → %s (score=%.2f)", artist, genres[:5], score)
+                    results[band] = {"genres": genres, "source": "musicbrainz", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
                 else:
                     # Mark as tried so we don't retry next time
                     _cache_set(artist, [], "musicbrainz_tried", conn=conn)
                     conn.commit()
-                    results[band] = {"genres": [], "source": "unknown", "is_heavy": False}
+                    results[band] = {"genres": [], "source": "unknown", "is_heavy": False, "heavy_score": 0.0}
 
         # Mark remaining (uncapped) candidates as musicbrainz_tried so they get picked up next run
         for band, artist in skipped_mb:
             _cache_set(artist, [], "musicbrainz_tried", conn=conn)
-            results[band] = {"genres": [], "source": "unknown", "is_heavy": False}
+            results[band] = {"genres": [], "source": "unknown", "is_heavy": False, "heavy_score": 0.0}
         conn.commit()
 
         return results

@@ -81,6 +81,33 @@ python3 gig_scraper.py --region all --format json
 
 The scraper enriches bands with genre tags from Last.fm (primary) and MusicBrainz (fallback). Results are cached in SQLite (`genre_cache.db`) so each band is only looked up once.
 
+### Heavy Confidence Scoring
+
+Bands are classified as "heavy" using a weighted confidence score (0.0–1.0) based on their genre tags:
+
+- **≥0.65** → Auto-approved as heavy ✅
+- **0.35–0.65** → Borderline, needs manual classification 🤔
+- **<0.35** → Not heavy ❌
+
+Genre weights (examples):
+- Death metal, black metal, grindcore, hardcore, sludge: **1.0**
+- Stoner rock, street punk, anarcho punk: **0.9**
+- Punk rock, garage punk, noise rock: **0.6**
+- Ska punk, emo, pop punk: **0.1–0.3**
+
+Manage borderline bands:
+```bash
+# List borderline bands
+python3 ask_heavy.py
+
+# List borderline bands with upcoming events
+python3 ask_heavy.py --upcoming
+
+# Classify a band
+python3 ask_heavy.py --band "Frenzal Rhomb" --yes  # heavy
+python3 ask_heavy.py --band "Frenzal Rhomb" --no   # not heavy
+```
+
 ```bash
 # Enrich all bands
 python3 gig_scraper.py --enrich-genres
@@ -105,7 +132,7 @@ The DuckDB database uses a dimensional model:
 ```
 events (event_id, raw_title, venue, date, date_iso, first_seen, last_seen, notified)
   ├── event_bands (event_id → band_id)
-  │     └── bands (band_id, name, genres, is_heavy, genre_source, updated_at)
+  │     └── bands (band_id, name, genres, is_heavy, heavy_score, heavy_source, genre_source, updated_at)
   │           └── band_genres (band_id → genre_id)
   │                 └── genres (genre_id, name)
 ```

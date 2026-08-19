@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS bands (
     name        VARCHAR NOT NULL UNIQUE,
     genres      VARCHAR DEFAULT '[]',
     is_heavy    BOOLEAN DEFAULT FALSE,
+    heavy_score REAL DEFAULT 0.0,
     genre_source VARCHAR DEFAULT '',
     updated_at  TIMESTAMP
 );
@@ -519,7 +520,7 @@ def get_stats(db_path: str = DB_PATH) -> Dict:
         }
 
 
-def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str, db_path: str = DB_PATH) -> None:
+def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str, db_path: str = DB_PATH, heavy_score: float = 0.0) -> None:
     """Update genre info for a band in the bands table (and junction tables)."""
     now = datetime.now()
     with _connect(db_path) as con:
@@ -530,8 +531,8 @@ def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str,
 
         # Update bands table (JSON genres for backward compat)
         con.execute(
-            "UPDATE bands SET genres = ?, is_heavy = ?, genre_source = ?, updated_at = ? WHERE band_id = ?",
-            [json.dumps(genres), is_heavy, source, now, band_id],
+            "UPDATE bands SET genres = ?, is_heavy = ?, heavy_score = ?, genre_source = ?, updated_at = ? WHERE band_id = ?",
+            [json.dumps(genres), is_heavy, heavy_score, source, now, band_id],
         )
 
         # Update band_genres junction
