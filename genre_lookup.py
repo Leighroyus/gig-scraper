@@ -104,10 +104,10 @@ def _cache_get(band: str, conn: sqlite3.Connection = None, db_path: str = CACHE_
         conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT genres, source, fetched_at FROM genre_cache WHERE band_key = ?", [key]
+            "SELECT genres, source, fetched_at, heavy_score FROM genre_cache WHERE band_key = ?", [key]
         ).fetchone()
         if row:
-            return {"genres": json.loads(row[0]), "source": row[1], "fetched_at": row[2]}
+            return {"genres": json.loads(row[0]), "source": row[1], "fetched_at": row[2], "heavy_score": row[3] or 0.0}
         return None
     finally:
         if own_conn:
@@ -133,7 +133,7 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
 
         con_db = duckdb.connect(duckdb_path, read_only=True)
         rows = con_db.execute(
-            "SELECT name, genres, is_heavy, genre_source FROM bands WHERE genres IS NOT NULL AND genres != '[]'"
+            "SELECT name, genres, is_heavy, genre_source, heavy_score FROM bands WHERE genres IS NOT NULL AND genres != '[]'"
         ).fetchall()
         con_db.close()
 
@@ -142,7 +142,7 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
 
         count = 0
         con_sql = sqlite3.connect(CACHE_DB)
-        for band_name, genres_json, is_heavy, source in rows:
+        for band_name, genres_json, is_heavy, source, heavy_score in rows:
             key = _band_key(band_name)
             # Skip if already cached
             existing = con_sql.execute(
@@ -158,8 +158,8 @@ def seed_cache_from_duckdb(duckdb_path: str = None) -> int:
 
             src = source or 'duckdb'
             con_sql.execute(
-                "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at) VALUES (?, ?, ?, datetime('now'))",
-                [key, json.dumps(genres), src],
+                "INSERT OR REPLACE INTO genre_cache (band_key, genres, source, fetched_at, heavy_score) VALUES (?, ?, ?, datetime('now'), ?)",
+                [key, json.dumps(genres), src, heavy_score or 0.0],
             )
             count += 1
 
@@ -598,14 +598,14 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
             # Check cache
             cached = _cache_get(artist, conn=conn)
             if cached:
-                # Skip if already tried MusicBrainz and got nothing
-                if cached["source"] in ("musicbrainz_tried", "unknown"):
+                # Use stored heavy_score if available (avoids re-classifying
+                # with default count=50 which gives false negatives)
+                cached_heavy_score = cached.get("heavy_score", 0.0)
+                if cached_heavy_score > 0:
+                    cached["is_heavy"] = cached_heavy_score >= HEAVY_THRESHOLD
+                else:
                     cached["is_heavy"] = _is_heavy(cached["genres"])
-                    cached["heavy_score"] = cached.get("heavy_score", 0.0)
-                    results[band] = cached
-                    continue
-                cached["is_heavy"] = _is_heavy(cached["genres"])
-                cached["heavy_score"] = cached.get("heavy_score", 0.0)
+                cached["heavy_score"] = cached_heavy_score
                 results[band] = cached
                 continue
 

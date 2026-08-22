@@ -344,11 +344,22 @@ def upsert_gigs(gigs: List[Dict], db_path: str = DB_PATH) -> Dict:
             date = gig['date']
             date_iso = normalize_date(date)
 
-            # Check if event already exists (by raw_title + venue + date)
+            # Check if event already exists (by exact match)
             existing = con.execute(
                 "SELECT event_id FROM events WHERE raw_title = ? AND venue = ? AND date = ?",
                 [raw_title, venue, date],
             ).fetchone()
+            if not existing:
+                # Try headliner match: extract first band name before common separators
+                # and check if any existing event at same venue/date starts with that headliner
+                headliner = re.split(r'[|+&]', raw_title)[0].strip()
+                headliner = re.sub(r'\s*(w/|with|ft\.?|feat\.?)\s*.*', '', headliner, flags=re.IGNORECASE).strip()
+                if len(headliner) >= 3:
+                    existing = con.execute(
+                        "SELECT event_id FROM events WHERE venue = ? AND date = ? "
+                        "AND (raw_title LIKE ? OR ? LIKE raw_title || '%')",
+                        [venue, date, f"{headliner}%", raw_title],
+                    ).fetchone()
 
             if existing:
                 event_id = existing[0]

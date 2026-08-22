@@ -642,6 +642,29 @@ def main():
             gig['genres'] = gr['genres']
             gig['is_heavy'] = gr['is_heavy']
             gig['heavy_score'] = gr.get('heavy_score', 0.0)
+    elif args.genre == 'heavy':
+        # When filtering by genre without enrichment, look up existing is_heavy from DB
+        # Check all bands linked to the event, not just the headliner
+        from gig_store import _connect
+        event_heavy = {}  # event_key -> (is_heavy, max_heavy_score)
+        with _connect(db_path) as con:
+            rows = con.execute("""
+                SELECT e.raw_title, e.venue, e.date,
+                       MAX(b.is_heavy) as has_heavy, MAX(b.heavy_score) as max_score
+                FROM events e
+                JOIN event_bands eb ON e.event_id = eb.event_id
+                JOIN bands b ON eb.band_id = b.band_id
+                GROUP BY e.event_id, e.raw_title, e.venue, e.date
+                HAVING MAX(b.is_heavy) = TRUE
+            """).fetchall()
+            for title, venue, date, has_heavy, score in rows:
+                key = (title, venue, date)
+                event_heavy[key] = (has_heavy, score or 0.0)
+        for gig in display_gigs:
+            key = (gig['band'], gig['venue'], gig['date'])
+            if key in event_heavy:
+                gig['is_heavy'] = True
+                gig['heavy_score'] = event_heavy[key][1]
 
     # Genre filter
     if args.genre == 'heavy':
