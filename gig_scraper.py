@@ -642,9 +642,10 @@ def main():
             gig['genres'] = gr['genres']
             gig['is_heavy'] = gr['is_heavy']
             gig['heavy_score'] = gr.get('heavy_score', 0.0)
-    elif args.genre == 'heavy':
-        # When filtering by genre without enrichment, look up existing is_heavy from DB
-        # Check all bands linked to the event, not just the headliner
+
+    if args.genre == 'heavy':
+        # Always look up heavy bands from DB to catch pre-existing events
+        # that weren't in the current scrape (e.g. TBA date events)
         from gig_store import _connect
         event_heavy = {}  # event_key -> (is_heavy, max_heavy_score)
         with _connect(db_path) as con:
@@ -665,6 +666,17 @@ def main():
             if key in event_heavy:
                 gig['is_heavy'] = True
                 gig['heavy_score'] = event_heavy[key][1]
+        # Also add pre-existing heavy events not in current scrape
+        scraped_keys = {(g['band'], g['venue'], g['date']) for g in display_gigs}
+        for (title, venue, date), (has_heavy, score) in event_heavy.items():
+            if (title, venue, date) not in scraped_keys:
+                display_gigs.append({
+                    'band': title,
+                    'venue': venue,
+                    'date': date,
+                    'is_heavy': True,
+                    'heavy_score': score,
+                })
 
     # Genre filter
     if args.genre == 'heavy':
