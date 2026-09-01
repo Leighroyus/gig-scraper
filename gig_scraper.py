@@ -548,12 +548,117 @@ class GigScraper:
             return "No gigs found."
         if format_type == 'json':
             return json.dumps(gigs, indent=2, ensure_ascii=False)
+        if format_type == 'whatsapp':
+            return format_whatsapp(gigs)
         return '\n'.join(f"{g['band']} | {g['venue']} | {g['date']}" for g in gigs)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+# Heavy report helpers
+# ---------------------------------------------------------------------------
+
+def _dedupe_events(gigs: List[Dict]) -> List[Dict]:
+    """Merge near-duplicate events: same venue+date (keep longest title),
+    or same venue+title-prefix for TBA events."""
+    def norm(s):
+        return re.sub(r'\s+', ' ', (s or '').lower()).strip()
+
+    kept: Dict[tuple, Dict] = {}
+    order: List[tuple] = []
+    for g in gigs:
+        venue = norm(g['venue'])
+        if g.get('date_iso'):
+            key = ('d', venue, str(g['date_iso'])[:10])
+        else:
+            key = ('t', venue, norm(g['band'])[:20])
+        if key not in kept:
+            kept[key] = g
+            order.append(key)
+        else:
+            # keep the more descriptive title
+            if len(g['band']) > len(kept[key]['band']):
+                kept[key] = g
+    return [kept[k] for k in order]
+
+
+def filter_heavy_upcoming(gigs: List[Dict], tba_days: int = 30) -> List[Dict]:
+    """Keep is_heavy gigs that are still upcoming:
+    - dated events in the past are dropped
+    - TBA-date events kept only if last seen within tba_days days
+      (events fresh from this scrape, which carry no last_seen, are kept)
+    Near-duplicate events are merged."""
+    from datetime import date, timedelta
+    from gig_store import normalize_date
+    today = date.today()
+    cutoff = today - timedelta(days=tba_days)
+    out = []
+    for g in gigs:
+        if not g.get('is_heavy'):
+            continue
+        date_iso = g.get('date_iso')
+        if not date_iso:
+            date_iso = normalize_date(g.get('date', ''))
+            g['date_iso'] = date_iso
+        if date_iso:
+            try:
+                d = date.fromisoformat(str(date_iso)[:10])
+            except ValueError:
+                d = None
+            if d and d < today:
+                continue  # stale past event
+        else:
+            last_seen = g.get('last_seen')
+            if last_seen:
+                try:
+                    ls = datetime.fromisoformat(str(last_seen)[:19]).date()
+                    if ls < cutoff:
+                        continue  # stale TBA event
+                except ValueError:
+                    pass
+            # no last_seen => freshly scraped => keep
+        out.append(g)
+    return _dedupe_events(out)
+
+
+def _truncate(text: str, limit: int = 100) -> str:
+    text = re.sub(r'\s+', ' ', text).strip()
+    if len(text) > limit:
+        return text[:limit - 1].rstrip() + '…'
+    return text
+
+
+def format_whatsapp(gigs: List[Dict]) -> str:
+    """Format gigs for WhatsApp: bold date headers, one bullet per event."""
+    from datetime import date
+    if not gigs:
+        return "🤘 No upcoming heavy gigs."
+    dated, tba = [], []
+    for g in gigs:
+        di = g.get('date_iso')
+        if di:
+            try:
+                dated.append((date.fromisoformat(str(di)[:10]), g))
+                continue
+            except ValueError:
+                pass
+        tba.append(g)
+    dated.sort(key=lambda t: t[0])
+    lines = [f"🤘 *HEAVY GIGS* — {len(gigs)} upcoming", ""]
+    last_day = None
+    for d, g in dated:
+        if d != last_day:
+            lines.append(f"*{d.strftime('%a %d %b')}*")
+            last_day = d
+        lines.append(f"• {_truncate(g['band'])} @ {g['venue']}")
+    if tba:
+        lines.append("")
+        lines.append("*Date TBA*")
+        for g in tba:
+            lines.append(f"• {_truncate(g['band'])} @ {g['venue']}")
+    return '\n'.join(lines)
+
 
 def main():
     # BUG FIX #5: configure logging at the top, before anything else
@@ -562,7 +667,7 @@ def main():
     parser = argparse.ArgumentParser(description='Scrape upcoming gigs from venues')
     parser.add_argument('--region', choices=['melbourne', 'geelong', 'surfcoast', 'all'], default='all',
                         help='Region to scrape (default: all)')
-    parser.add_argument('--format', choices=['text', 'json'], default='text',
+    parser.add_argument('--format', choices=['text', 'json', 'whatsapp'], default='text',
                         help='Output format (default: text)')
     parser.add_argument('--limit', type=int, default=10,
                         help='Max gigs per venue (default: 10)')
@@ -647,20 +752,21 @@ def main():
         # Always look up heavy bands from DB to catch pre-existing events
         # that weren't in the current scrape (e.g. TBA date events)
         from gig_store import _connect
-        event_heavy = {}  # event_key -> (is_heavy, max_heavy_score)
+        event_heavy = {}  # event_key -> (is_heavy, max_heavy_score, date_iso, last_seen)
         with _connect(db_path) as con:
             rows = con.execute("""
                 SELECT e.raw_title, e.venue, e.date,
-                       MAX(b.is_heavy) as has_heavy, MAX(b.heavy_score) as max_score
+                       MAX(b.is_heavy) as has_heavy, MAX(b.heavy_score) as max_score,
+                       MAX(e.date_iso) as date_iso, MAX(e.last_seen) as last_seen
                 FROM events e
                 JOIN event_bands eb ON e.event_id = eb.event_id
                 JOIN bands b ON eb.band_id = b.band_id
                 GROUP BY e.event_id, e.raw_title, e.venue, e.date
                 HAVING MAX(b.is_heavy) = TRUE
             """).fetchall()
-            for title, venue, date, has_heavy, score in rows:
+            for title, venue, date, has_heavy, score, date_iso, last_seen in rows:
                 key = (title, venue, date)
-                event_heavy[key] = (has_heavy, score or 0.0)
+                event_heavy[key] = (has_heavy, score or 0.0, date_iso, last_seen)
         for gig in display_gigs:
             key = (gig['band'], gig['venue'], gig['date'])
             if key in event_heavy:
@@ -668,7 +774,7 @@ def main():
                 gig['heavy_score'] = event_heavy[key][1]
         # Also add pre-existing heavy events not in current scrape
         scraped_keys = {(g['band'], g['venue'], g['date']) for g in display_gigs}
-        for (title, venue, date), (has_heavy, score) in event_heavy.items():
+        for (title, venue, date), (has_heavy, score, date_iso, last_seen) in event_heavy.items():
             if (title, venue, date) not in scraped_keys:
                 display_gigs.append({
                     'band': title,
@@ -676,11 +782,13 @@ def main():
                     'date': date,
                     'is_heavy': True,
                     'heavy_score': score,
+                    'date_iso': str(date_iso) if date_iso else None,
+                    'last_seen': str(last_seen) if last_seen else None,
                 })
 
     # Genre filter
     if args.genre == 'heavy':
-        display_gigs = [g for g in display_gigs if g.get('is_heavy')]
+        display_gigs = filter_heavy_upcoming(display_gigs)
         print(f"[{len(display_gigs)} heavy gigs]", file=sys.stderr)
 
     # BUG FIX #11: only mark notified when --new-only is driving output
