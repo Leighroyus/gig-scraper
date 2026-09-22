@@ -154,7 +154,7 @@ def _fetch_static(url: str, max_retries: int = 3, base_delay: float = 1.0) -> st
     for attempt in range(max_retries):
         try:
             if use_cffi:
-                response = cf_requests.get(url, impersonate='chrome124', timeout=10)
+                response = cf_requests.get(url, impersonate='chrome136', timeout=10)
             else:
                 response = _requests_fallback.get(url, timeout=10,
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'})
