@@ -385,8 +385,26 @@ def _lastfm_lookup(band: str) -> Optional[List[Dict]]:
 # MusicBrainz
 # ---------------------------------------------------------------------------
 
-def _musicbrainz_lookup(band: str) -> Optional[List[str]]:
-    """Query MusicBrainz search API. Returns list of tags."""
+def _is_junk_tag(name: str) -> bool:
+    """Filter non-genre junk tags (MB 'various artists' pages are full of them)."""
+    n = name.strip().lower()
+    if len(n) > 50 or "http" in n:
+        return True  # sentences / URLs, not genres
+    if n in {"va", "various", "various artists", "artist", "tags", "fixme", "mess", "fix"}:
+        return True
+    if re.fullmatch(r"[\d\s\-]+", n):
+        return True  # pure numbers/years
+    return False
+
+
+def _musicbrainz_lookup(band: str) -> Optional[List[Dict]]:
+    """Query MusicBrainz search API. Returns top tags sorted by vote count.
+
+    Returns list of {name, count} dicts (count = MB vote count, capped at 100
+    when scaled). Only the top 10 voted tags are returned — MB artist pages
+    (especially VA/junk pages) can carry hundreds of noisy tags and the tail
+    is garbage.
+    """
     try:
         resp = requests.get(
             "https://musicbrainz.org/ws/2/artist/",
@@ -399,11 +417,16 @@ def _musicbrainz_lookup(band: str) -> Optional[List[str]]:
         artists = data.get("artists", [])
         if not artists:
             return None
-        tags = []
-        for artist in artists:
-            for tag in artist.get("tags", []):
-                tags.append(tag["name"])
-        return tags if tags else None
+        tags = sorted(
+            artists[0].get("tags", []),
+            key=lambda t: -t.get("count", 0),
+        )
+        result = [
+            {"name": t["name"], "count": 50}  # synthetic count; MB has no 0-100 scale
+            for t in tags
+            if t.get("name") and not _is_junk_tag(t["name"])
+        ][:10]
+        return result if result else None
     except Exception as e:
         log.warning("MusicBrainz lookup failed for %s: %s", band, e)
         return None
@@ -493,9 +516,10 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
         time.sleep(1.1)
 
         # Try MusicBrainz
-        genres = _musicbrainz_lookup(artist)
-        if genres:
-            score = _calc_heavy_score([{"name": g, "count": 50} for g in genres])
+        tags = _musicbrainz_lookup(artist)
+        if tags:
+            genres = [t["name"] for t in tags]
+            score = _calc_heavy_score(tags)
             _cache_set(artist, genres, "musicbrainz", conn=conn, heavy_score=score)
             conn.commit()
             log.info("MusicBrainz: %s → %s (score=%.2f)", artist, genres[:5], score)
@@ -509,14 +533,48 @@ def lookup_genres(band: str, force: bool = False, duckdb_path: str = None) -> Di
         conn.close()
 
 
+def _match_weight(tag_name: str):
+    """Match a tag against HEAVY_GENRES.
+
+    Order of preference:
+      1. Exact match
+      2. Longest substring match (so 'pop punk' matches 'pop punk' before 'punk')
+
+    Very short genre names (<= 3 chars, e.g. 'oi') only match on a word
+    boundary — plain substring matching makes 'noise' match 'oi'.
+
+    Returns the genre weight, or None if no match.
+    """
+    if tag_name in HEAVY_GENRES:
+        return HEAVY_GENRES[tag_name]
+    best = None
+    for heavy_genre, weight in HEAVY_GENRES.items():
+        if weight <= 0 or heavy_genre not in tag_name:
+            continue
+        if len(heavy_genre) <= 3 and not re.search(rf"\b{re.escape(heavy_genre)}\b", tag_name):
+            continue  # ambiguous short genre requires a word boundary
+        if best is None or len(heavy_genre) > len(best[0]):
+            best = (heavy_genre, weight)
+    return best[1] if best else None
+
+
 def _calc_heavy_score(tags: List[Dict]) -> float:
     """Calculate a heavy confidence score from weighted genre tags.
 
     Args:
-        tags: List of {name, count} dicts from Last.fm (count = 0-100).
+        tags: List of {name, count} dicts from Last.fm (count = 0-100),
+              or plain genre names with a synthetic count (e.g. 50 for
+              MusicBrainz, which has no counts).
 
     Returns:
         Score from 0.0 (definitely not heavy) to 1.0 (definitely heavy).
+
+    Scoring model:
+      - Tag score = genre_weight * (0.5 + 0.5 * count/100).
+        A soft floor of 0.5 means an unambiguous genre (weight 1.0) is
+        credible even at modest tag counts; a count of 0 still halves it.
+      - Corroboration: each additional clearly-heavy tag (weight >= 0.5)
+        adds +0.05, capped at +0.15 total.
     """
     if not tags:
         return 0.0
@@ -528,28 +586,25 @@ def _calc_heavy_score(tags: List[Dict]) -> float:
         tag_name = tag["name"].lower().strip()
         tag_count = tag.get("count", 0)  # 0-100 from Last.fm
 
-        # Find matching heavy genre
-        weight = None
-        for heavy_genre, genre_weight in HEAVY_GENRES.items():
-            if tag_name == heavy_genre or heavy_genre in tag_name:
-                weight = genre_weight
-                break
+        weight = _match_weight(tag_name)
 
         if weight is not None and weight > 0:
-            # Score = genre_weight * (tag_count / 100)
-            # A death metal tag at count=100 → 1.0
-            # A punk tag at count=50 → 0.3
-            tag_score = weight * (tag_count / 100.0)
+            # Softened count curve: weight 1.0 @ count 100 -> 1.0,
+            # weight 1.0 @ count 60 -> 0.8, weight 0.6 @ count 50 -> 0.55
+            tag_score = weight * (0.5 + 0.5 * (tag_count / 100.0))
+            tag_score = min(tag_score, 1.0)
             heavy_matches.append((tag_name, weight, tag_count, tag_score))
             best_score = max(best_score, tag_score)
 
-    # Bonus for multiple heavy genre matches (corroboration)
-    if len(heavy_matches) >= 2:
-        avg_top2 = sum(h[3] for h in heavy_matches[:2]) / 2.0
-        best_score = max(best_score, avg_top2)
+    # Corroboration bonus — only for clearly heavy genres (weight >= 0.5).
+    # Additive so it can actually lift a band over the threshold, unlike
+    # averaging (which can never exceed the max).
+    strong = [m for m in heavy_matches if m[1] >= 0.5]
+    if len(strong) >= 2:
+        bonus = min(0.15, 0.05 * (len(strong) - 1))
+        best_score = min(best_score + bonus, 1.0)
 
-    # Cap at 1.0
-    return min(best_score, 1.0)
+    return best_score
 
 
 def _is_heavy(tags) -> bool:
@@ -659,11 +714,12 @@ def batch_lookup(bands: List[str]) -> Dict[str, Dict]:
 
                 genres = _musicbrainz_lookup(artist)
                 if genres:
-                    score = _calc_heavy_score([{"name": g, "count": 50} for g in genres])
-                    _cache_set(artist, genres, "musicbrainz", conn=conn, heavy_score=score)
+                    genre_names = [t["name"] for t in genres]
+                    score = _calc_heavy_score(genres)
+                    _cache_set(artist, genre_names, "musicbrainz", conn=conn, heavy_score=score)
                     conn.commit()
-                    log.info("MusicBrainz: %s → %s (score=%.2f)", artist, genres[:5], score)
-                    results[band] = {"genres": genres, "source": "musicbrainz", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
+                    log.info("MusicBrainz: %s → %s (score=%.2f)", artist, genre_names[:5], score)
+                    results[band] = {"genres": genre_names, "source": "musicbrainz", "is_heavy": score >= HEAVY_THRESHOLD, "heavy_score": score}
                 else:
                     # Mark as tried so we don't retry next time
                     _cache_set(artist, [], "musicbrainz_tried", conn=conn)
