@@ -145,16 +145,20 @@ def _fetch_algolia(venue_name: str, index: str = 'prod_oztix_eventguide_past_eve
 # HTML acquisition helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_static(url: str, max_retries: int = 3, base_delay: float = 1.0) -> str:
+def _fetch_static(url: str, max_retries: int = 3, base_delay: float = 1.0, impersonate: str = None) -> str:
     """Fetch a URL with TLS fingerprint impersonation via curl_cffi.
 
     Falls back to plain requests if curl_cffi is not installed.
+    *impersonate* overrides the TLS fingerprint target (per-venue setting);
+    Cloudflare rotates which fingerprints get blocked, so a venue that starts
+    403ing may just need a different one (e.g. firefox133).
     """
     use_cffi = _use_cffi
+    imp = impersonate or 'chrome136'
     for attempt in range(max_retries):
         try:
             if use_cffi:
-                response = cf_requests.get(url, impersonate='chrome136', timeout=10)
+                response = cf_requests.get(url, impersonate=imp, timeout=10)
             else:
                 response = _requests_fallback.get(url, timeout=10,
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'})
@@ -355,6 +359,8 @@ _DATE_PATTERNS = [
     r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s*\d{4})',
     # Day-of-week + day + month + time (no year): e.g. "Sun 12 Jul 07:00pm"
     r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}:\d{2}\s*(?:am|pm)?)',
+    # Abbrev day + day + abbrev month (no year) — e.g. "Fri 02 Oct" (Tote event-date)
+    r'((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]{0,3}\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]{0,4})(?!\s*\d{1,2}:\d{2})',
     # FIX: day-of-week + day + month (no year) — e.g. "SATURDAY 8 AUGUST"
     r'((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)',
 ]
@@ -369,7 +375,23 @@ def _extract_date(text: str) -> Optional[str]:
     for pattern in _DATE_PATTERNS:
         match = re.search(pattern, cleaned, re.IGNORECASE)
         if match:
-            return match.group(1)
+            found = match.group(1)
+            # No-year dates (e.g. "Fri 02 Oct" from upcoming-event listings):
+            # resolve to the next future occurrence so date_iso gets a real year
+            if not re.search(r'\d{4}', found):
+                try:
+                    import dateparser
+                    resolved = dateparser.parse(found, settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'DATE_ORDER': 'DMY',
+                        'PREFER_DAY_OF_MONTH': 'first',
+                        'RETURN_AS_TIMEZONE_AWARE': False,
+                    })
+                    if resolved:
+                        return resolved.strftime('%d %b %Y')
+                except Exception:
+                    pass
+            return found
     return None
 
 
@@ -421,7 +443,7 @@ class GigScraper:
         if vtype == 'scrapeops':
             # Fallback: treat scrapeops venues as static (curl_cffi handles Cloudflare)
             log.info("%s has type=scrapeops — using curl_cffi instead", venue['name'])
-            return _fetch_static(venue['url'])
+            return _fetch_static(venue['url'], impersonate=venue.get('impersonate'))
         elif venue.get('requires_js', False) or vtype == 'js':
             wait_for = venue.get('wait_for_selector')
             html = _fetch_playwright(
@@ -442,7 +464,7 @@ class GigScraper:
                     )
             return html
         else:
-            html = _fetch_static(venue['url'])
+            html = _fetch_static(venue['url'], impersonate=venue.get('impersonate'))
             # Basic 404 check
             soup = BeautifulSoup(html, 'html.parser')
             page_text = soup.get_text().lower()
@@ -471,6 +493,10 @@ class GigScraper:
 
         try:
             for i, venue in enumerate(self.venues[region]):
+                # Respect enabled=false (e.g. venues with dead sites)
+                if venue.get('enabled') is False:
+                    log.info("Skipping %s (disabled in venues.json)", venue['name'])
+                    continue
                 # --- Algolia API venues: bypass Playwright entirely ---
                 if venue.get('type') == 'algolia':
                     log.info("Fetching %s via Algolia API…", venue['name'])

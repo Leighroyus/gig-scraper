@@ -459,6 +459,19 @@ def cleanup_old_gigs(days: int = 90, db_path: str = DB_PATH) -> int:
                 )
             """)
 
+        # Also purge stale undated (TBA) events not seen recently — they'd otherwise
+        # accumulate forever since they have no date_iso to age out
+        tba_cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+        tba_ids = [r[0] for r in con.execute(
+            "SELECT event_id FROM events WHERE date = 'TBA' AND last_seen < ?", [tba_cutoff]
+        ).fetchall()]
+        if tba_ids:
+            placeholders = ','.join(['?'] * len(tba_ids))
+            con.execute(f"DELETE FROM event_bands WHERE event_id IN ({placeholders})", tba_ids)
+            con.execute(f"DELETE FROM events WHERE event_id IN ({placeholders})", tba_ids)
+            log.info("Purged %d stale TBA events (not seen in 30 days)", len(tba_ids))
+            count += len(tba_ids)
+
         return count
 
 

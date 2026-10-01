@@ -18,12 +18,13 @@
             "name": "The Tote Hotel",
             "url": "https://thetotehotel.com/",
             "type": "js",
+            "wait_for_selector": "article.hit",
             "selectors": {
-                "container": "[class*=\"event\"]",
-                "title": ".event-name, .event-details",
-                "date": ".event-date, .highlight"
+                "container": "article.hit",
+                "title": ".event-name",
+                "date": ".event-date"
             },
-            "note": "Uses JavaScript - uses Playwright"
+            "note": "Oztix/Algolia instantsearch widget. Fixed 2026-10-02: old [class*=event] container matched nested elements so description prose got scraped as band names"
         },
         {
             "name": "Max Watts",
@@ -48,13 +49,14 @@
         {
             "name": "Bendigo Hotel",
             "url": "https://www.bendigohotel.com.au/gigs",
+            "enabled": false,
             "type": "js",
             "selectors": {
                 "container": "article.hit",
                 "title": ".event-name",
                 "date": ".floating-date-time"
             },
-            "note": "Squarespace/Oztix site - Collingwood"
+            "note": "DISABLED 2026-10-02: site is dead at Squarespace's end ('Domain Not Claimed' + default *.squarespace.com cert = hostname mismatch). Venue's domain mapping lapsed, likely during the Mill Brewery ownership change. Re-enable if they fix it."
         },
         {
             "name": "Night Hawks",
@@ -156,12 +158,13 @@
             "name": "Torquay Hotel",
             "url": "https://torquayhotel.com.au/gigs/",
             "type": "static",
+            "impersonate": "firefox133",
             "selectors": {
                 "container": ".gig",
                 "title": ".gig__name",
                 "date": ".gig__date"
             },
-            "note": "Cloudflare-protected — uses curl_cffi TLS impersonation"
+            "note": "Cloudflare-protected — curl_cffi impersonation. chrome136 blacklisted again (2026-10-02 403s), firefox133 passes. If it 403s again try safari184/edge101 or newer chrome"
         }
     ]
 }
