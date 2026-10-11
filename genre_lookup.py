@@ -619,7 +619,29 @@ def _calc_heavy_score(tags: List[Dict]) -> float:
         bonus = min(0.15, 0.05 * (len(strong) - 1))
         best_score = min(best_score + bonus, 1.0)
 
+    # Ambiguity guard: if the tag set carries a disambiguation marker, the
+    # lookup matched a name-collision artist — possibly a different band
+    # entirely (e.g. 'Bray' the Melbourne indie act resolving to an
+    # Indonesian death metal band, auto-approved heavy at 1.0). Tags from an
+    # uncertain identity must not auto-approve heavy; cap at the borderline
+    # floor so manual classification (ask_heavy.py) is required.
+    if _is_ambiguous_identity(tag["name"].lower() for tag in tags):
+        best_score = min(best_score, BORDERLINE_LOW)
+
     return best_score
+
+
+def _is_ambiguous_identity(tag_names) -> bool:
+    """True if the tag set marks the artist as a name-collision/ambiguous
+    entity (Last.fm disambiguation tags, including common misspellings)."""
+    markers = (
+        "same name",          # covers 'multible bands with the same name'
+        "multiple bands",
+        "multible bands",
+        "band name variations",
+        "name collision",
+    )
+    return any(m in name for name in tag_names for m in markers)
 
 
 def _is_heavy(tags) -> bool:
