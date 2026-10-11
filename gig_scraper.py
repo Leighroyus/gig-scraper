@@ -85,7 +85,10 @@ def _check_dns(url: str, timeout: float = 3.0) -> bool:
 
 # Shared Algolia credentials (search-only, embedded in page source)
 _ALGOLIA_APP_ID = 'ICGFYQWGTD'
-_ALGOLIA_API_KEY = 'fd2db5fd9e8d6a99f5fa0b564cadd484'
+# Rotated 2026-10-11: old key's secured view only exposed Shotkickers; the
+# key embedded on current Oztix venue pages (thecroxton.com.au) sees the
+# full eventguide index incl. Kindred Studios and The Croxton Bandroom.
+_ALGOLIA_API_KEY = '01fd4a2dbcd92f181461f0d12929e3cc'
 _ALGOLIA_BASE_URL = f'https://{_ALGOLIA_APP_ID}-dsn.algolia.net/1/indexes/*/queries'
 _ALGOLIA_HEADERS = {
     'x-algolia-application-id': _ALGOLIA_APP_ID,

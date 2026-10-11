@@ -93,6 +93,17 @@ def _init_cache(db_path: str = CACHE_DB) -> sqlite3.Connection:
             fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration: ensure heavy_score and tags_json exist (queries expect
+    # them before any _cache_set can have added them on a fresh cache DB).
+    for column, ddl in (
+        ("heavy_score", "ALTER TABLE genre_cache ADD COLUMN heavy_score REAL DEFAULT 0.0"),
+        ("tags_json", "ALTER TABLE genre_cache ADD COLUMN tags_json TEXT"),
+    ):
+        try:
+            con.execute(f"SELECT {column} FROM genre_cache LIMIT 1")
+        except sqlite3.OperationalError:
+            con.execute(ddl)
+            con.commit()
     return con
 
 
@@ -445,6 +456,10 @@ _NON_MUSIC_PATTERNS = [
     r'(?i)^\s*(?:the\s+)?(?:front\s+bar|back\s+bar|beer\s+garden|beer\s+hall)\b',
     r'(?i)\b(?:swap\s+meet|flea\s+market|car\s+show|auto\s+show|food\s+festival|wine\s+festival|beer\s+festival)\b',
     r'(?i)^\s*(?:DJ\s+)?(?:set|b2b|back\s+to\s+back)\b',
+    # DJ-stage-name events: not bands. Avoids MusicBrainz matching the
+    # "[various artists]" special-purpose entity whose tag-spam (punk, metal,
+    # rock, ...) scores as heavy. Added 2026-10-11 (DJ TOM ECLECT false pos).
+    r'(?i)^\s*DJ\s+\S',
     r'(?i)\b(?:talk|seminar|workshop|class|lecture|panel|conference|meetup|meet\s+up)\b',
     r'(?i)\b(?:film\s+festival|movie|cinema|screening|theatre|theater|play|comedy|stand\s+up|improv)\b',
     r'(?i)\b(?:book\s+club|reading|poetry|open\s+book)\b',
