@@ -553,6 +553,15 @@ def update_gig_genres(band: str, genres: List[str], is_heavy: bool, source: str,
             return
         band_id = band_row[0]
 
+        # Manual classifications are sticky: a human verdict (heavy or not)
+        # and its curated genres must never be overwritten by automated
+        # lookup results — including cached ones (which may pre-date scorer
+        # fixes, e.g. Bray's cached heavy=1.0 clobbering a manual not-heavy
+        # on the next enrichment pass).
+        existing = con.execute("SELECT heavy_source FROM bands WHERE band_id = ?", [band_id]).fetchone()
+        if existing and existing[0] == 'manual':
+            return
+
         # Update bands table (JSON genres for backward compat)
         con.execute(
             "UPDATE bands SET genres = ?, is_heavy = ?, heavy_score = ?, genre_source = ?, updated_at = ? WHERE band_id = ?",
