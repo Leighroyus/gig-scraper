@@ -612,6 +612,24 @@ def _dedupe_events(gigs: List[Dict]) -> List[Dict]:
     return [kept[k] for k in order]
 
 
+def _heavy_display_name(event_title: str, heavy_names: str | None) -> str:
+    """Display name for a bill-heavy event in the report.
+
+    An event is heavy when ANY act on the bill is heavy, but the event's
+    raw_title may name a different act (e.g. indie-night event 'Claude'
+    featuring heavy act 'Inkling'). Show the heavy act(s); keep the event
+    title when it already names the heavy act (e.g. tour-title events like
+    'VADER - Reign Forever Australia').
+    """
+    if not heavy_names:
+        return event_title
+    title_lower = event_title.lower()
+    for name in heavy_names.split(' + '):
+        if name.strip().lower() in title_lower:
+            return event_title
+    return f"{heavy_names} – {event_title}"
+
+
 def filter_heavy_upcoming(gigs: List[Dict], tba_days: int = 30) -> List[Dict]:
     """Keep is_heavy gigs that are still upcoming:
     - dated events in the past are dropped
@@ -781,32 +799,37 @@ def main():
         # Always look up heavy bands from DB to catch pre-existing events
         # that weren't in the current scrape (e.g. TBA date events)
         from gig_store import _connect
-        event_heavy = {}  # event_key -> (is_heavy, max_heavy_score, date_iso, last_seen)
+        event_heavy = {}  # event_key -> (is_heavy, max_heavy_score, date_iso, last_seen, heavy_names)
         with _connect(db_path) as con:
             rows = con.execute("""
                 SELECT e.raw_title, e.venue, e.date,
                        MAX(b.is_heavy) as has_heavy, MAX(b.heavy_score) as max_score,
-                       MAX(e.date_iso) as date_iso, MAX(e.last_seen) as last_seen
+                       MAX(e.date_iso) as date_iso, MAX(e.last_seen) as last_seen,
+                       string_agg(b.name, ' + ' ORDER BY b.name) FILTER (WHERE b.is_heavy = TRUE) as heavy_names
                 FROM events e
                 JOIN event_bands eb ON e.event_id = eb.event_id
                 JOIN bands b ON eb.band_id = b.band_id
                 GROUP BY e.event_id, e.raw_title, e.venue, e.date
                 HAVING MAX(b.is_heavy) = TRUE
             """).fetchall()
-            for title, venue, date, has_heavy, score, date_iso, last_seen in rows:
+            for title, venue, date, has_heavy, score, date_iso, last_seen, heavy_names in rows:
                 key = (title, venue, date)
-                event_heavy[key] = (has_heavy, score or 0.0, date_iso, last_seen)
+                event_heavy[key] = (has_heavy, score or 0.0, date_iso, last_seen, heavy_names)
+        # Snapshot scrape keys BEFORE renaming display bands, so pre-existing
+        # appends don't duplicate events whose display name just changed.
+        scraped_keys = {(g['band'], g['venue'], g['date']) for g in display_gigs}
         for gig in display_gigs:
             key = (gig['band'], gig['venue'], gig['date'])
             if key in event_heavy:
+                has_heavy, score, _di, _ls, heavy_names = event_heavy[key]
                 gig['is_heavy'] = True
-                gig['heavy_score'] = event_heavy[key][1]
+                gig['heavy_score'] = score
+                gig['band'] = _heavy_display_name(gig['band'], heavy_names)
         # Also add pre-existing heavy events not in current scrape
-        scraped_keys = {(g['band'], g['venue'], g['date']) for g in display_gigs}
-        for (title, venue, date), (has_heavy, score, date_iso, last_seen) in event_heavy.items():
+        for (title, venue, date), (has_heavy, score, date_iso, last_seen, heavy_names) in event_heavy.items():
             if (title, venue, date) not in scraped_keys:
                 display_gigs.append({
-                    'band': title,
+                    'band': _heavy_display_name(title, heavy_names),
                     'venue': venue,
                     'date': date,
                     'is_heavy': True,
